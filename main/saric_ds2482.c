@@ -44,6 +44,7 @@ uint8_t ds2482reset(uint8_t address)
 	i2c_master_stop(cmd);
 	esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
 	i2c_cmd_link_delete(cmd);
+	
 	if (ret == ESP_OK)
 		return DS2482_ERR_OK;
 	else
@@ -64,6 +65,7 @@ uint8_t ds2482init( uint8_t addr)
 	i2c_master_stop(cmd);
 	ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
 	i2c_cmd_link_delete(cmd);
+	
 	if (ret == ESP_OK)
 		return DS2482_ERR_OK;
 	else
@@ -99,6 +101,7 @@ uint8_t ds2482setReadPointer(uint8_t address, uint8_t pointer)
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret == ESP_OK)
                 return DS2482_ERR_OK;
         else
@@ -133,6 +136,7 @@ uint8_t ds2482getConfig(uint8_t address, uint8_t *config)
 	i2c_master_stop(cmd);
 	ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
 	i2c_cmd_link_delete(cmd);
+	
         if (ret == ESP_OK)
                 return DS2482_ERR_OK;
         else
@@ -164,6 +168,7 @@ uint8_t ds2482setConfig(uint8_t address, uint8_t config)
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret == ESP_OK)
                 return DS2482_ERR_OK;
         else
@@ -190,13 +195,15 @@ uint8_t ds2482owReset(uint8_t address)
         uint8_t p=0;
 
 	esp_err_t ret;
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_cmd_handle_t cmd;
+        cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, address << 1 | WRITE_BIT, ACK_CHECK_EN);
         i2c_master_write_byte(cmd, DS2482_C_OWRS, ACK_CHECK_EN);
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret != ESP_OK)
         	return DS2482_ERR_WRITE;
 
@@ -215,6 +222,7 @@ uint8_t ds2482owReset(uint8_t address)
         	i2c_master_stop(cmd);
         	ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         	i2c_cmd_link_delete(cmd);
+		
         	if (ret != ESP_OK)
                 	return DS2482_ERR_I2C_DEVICE;
 
@@ -244,7 +252,8 @@ uint8_t ds2482owWriteByte(uint8_t address, uint8_t byte)
 {
 	uint8_t p=0;
 	esp_err_t ret;
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_cmd_handle_t cmd;
+        cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, address << 1 | WRITE_BIT, ACK_CHECK_EN);
         i2c_master_write_byte(cmd, DS2482_C_OWWB, ACK_CHECK_EN);
@@ -252,6 +261,7 @@ uint8_t ds2482owWriteByte(uint8_t address, uint8_t byte)
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret != ESP_OK)
                 return DS2482_ERR_WRITE;
 
@@ -271,6 +281,7 @@ uint8_t ds2482owWriteByte(uint8_t address, uint8_t byte)
                 i2c_master_stop(cmd);
                 ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
                 i2c_cmd_link_delete(cmd);
+		
                 if (ret != ESP_OK)
                         return DS2482_ERR_I2C_DEVICE;
 
@@ -312,7 +323,8 @@ uint8_t ds2482owWriteTriplet(uint8_t address, uint8_t *direction)
 
 
         esp_err_t ret;
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_cmd_handle_t cmd; 
+	cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, address << 1 | WRITE_BIT, ACK_CHECK_EN);
         i2c_master_write_byte(cmd, DS2482_C_OWT, ACK_CHECK_EN);
@@ -320,6 +332,7 @@ uint8_t ds2482owWriteTriplet(uint8_t address, uint8_t *direction)
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret != ESP_OK)
                 return DS2482_ERR_WRITE;
 
@@ -340,6 +353,7 @@ uint8_t ds2482owWriteTriplet(uint8_t address, uint8_t *direction)
                 i2c_master_stop(cmd);
                 ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
                 i2c_cmd_link_delete(cmd);
+		
                 if (ret != ESP_OK)
                         return DS2482_ERR_I2C_DEVICE;
 
@@ -366,13 +380,15 @@ uint8_t ds2482owReadByte(uint8_t address, uint8_t *byte)
 	uint8_t p=0;
 
         esp_err_t ret;
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_cmd_handle_t cmd; 
+	cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, address << 1 | WRITE_BIT, ACK_CHECK_EN);
         i2c_master_write_byte(cmd, DS2482_C_OWRB, ACK_CHECK_EN);
         i2c_master_stop(cmd);
         ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
         i2c_cmd_link_delete(cmd);
+	
         if (ret != ESP_OK)
                 return DS2482_ERR_WRITE;
 
@@ -392,6 +408,7 @@ uint8_t ds2482owReadByte(uint8_t address, uint8_t *byte)
                 i2c_master_stop(cmd);
                 ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
                 i2c_cmd_link_delete(cmd);
+		
                 if (ret != ESP_OK)
                         return DS2482_ERR_I2C_DEVICE;
 

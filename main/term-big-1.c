@@ -31,16 +31,21 @@
 
 #include "cJSON.h"
 
-#define TWDT_TIMEOUT_S          3
-#define TASK_RESET_PERIOD_S 2
+//#define TWDT_TIMEOUT_S          3
+//#define TASK_RESET_PERIOD_S 2
 
 
 #define RS_TXD  (GPIO_NUM_17)
 #define RS_RXD  (GPIO_NUM_16)
-#define ECHO_TEST_RTS  (UART_PIN_NO_CHANGE)
-#define ECHO_TEST_CTS  (UART_PIN_NO_CHANGE)
+#define RS_RTS  (GPIO_NUM_4)
+#define RS_CTS  (UART_PIN_NO_CHANGE)
+#define RS_TASK_STACK_SIZE    (2048)
+#define RS_TASK_PRIO          (10)
+#define PACKET_READ_TICS        (100 / portTICK_RATE_MS)
+#define RS_BUF_SIZE        (127)   //// definice maleho lokalniho rs bufferu
 
-#define MAX_TEMP_BUFFER 64
+
+#define MAX_TEMP_BUFFER 256
 #define UART_RECV_MAX_SIZE 256
 #define HW_ONEWIRE_MAXROMS 64
 #define HW_ONEWIRE_MAXDEVICES 32
@@ -50,6 +55,7 @@
 
 #define eeprom_start_stored_device 100
 #define eeprom_start_my_device 10
+#define eeprom_start_wifi_setup 3200
 
 #include "SSD1306.h"
 #include "Font5x8.h"
@@ -60,6 +66,9 @@
 #include "term-big-1.h"
 #include "html.c"
 
+char tmp3[MAX_TEMP_BUFFER];
+char tmp1[MAX_TEMP_BUFFER];
+char tmp2[MAX_TEMP_BUFFER];
 
 uint8_t start_at = 0;
 uint8_t re_at = 0;
@@ -68,7 +77,7 @@ uint8_t at_recv_complete = 0;
 
 i2c_port_t i2c_num;
 
-static EventGroupHandle_t wifi_event_group;
+EventGroupHandle_t wifi_event_group;
 const static int CONNECTED_BIT = BIT0;
 
 esp_mqtt_client_handle_t mqtt_client;
@@ -143,14 +152,14 @@ typedef struct
   uint16_t year;
 } DateTime;
 
-static void mqtt_app_stop(void);
-static void mqtt_app_start(void);
 
-static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
-static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
+uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
+uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
 
+void callback_30_second(void* arg);
 
 //////////////////////////////////////////////////////////////////////////
+/*
 void read_at(char *input)
 {
   uint8_t c;
@@ -200,7 +209,7 @@ void read_at(char *input)
 endloop:;
   }
 }
-
+*/
 
 void new_parse_at(char *input, char *out1, char *out2)
 {
@@ -227,6 +236,30 @@ void new_parse_at(char *input, char *out1, char *out2)
   }
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////
+void rs_send_at(uint8_t id, char *cmd, char *args)
+{
+  char tmp1[MAX_TEMP_BUFFER];
+  char tmp2[8];
+
+  tmp1[0] = 0;
+  tmp2[0] = 0;
+
+  strcpy(tmp1, "at+");
+  itoa(id, tmp2, 10);
+  strcat(tmp1, tmp2);
+  strcat(tmp1, ",");
+  strcat(tmp1, cmd);
+  if (strlen(args) > 0)
+  {
+    strcat(tmp1, ",");
+    strcat(tmp1, args);
+  }
+  strcat(tmp1, ";");
+
+  uart_write_bytes(UART_NUM_2, tmp1, strlen(tmp1));
+}
+//////////////////////////////////////////////////////////////////////////////////////////
 
 
 esp_err_t RTC_DS1307_adjust(DateTime *dt) 
@@ -262,7 +295,7 @@ esp_err_t RTC_DS1307_now(DateTime *now)
 
   esp_err_t ret;
   DateTime dt;
-  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  i2c_cmd_handle_t cmd;
   cmd = i2c_cmd_link_create();
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (DS1307_ADDRESS << 1) | WRITE_BIT, ACK_CHECK_EN);
@@ -335,7 +368,7 @@ uint8_t sync_ntp_time_with_local_rtc(void)
   struct tm timeinfo = { 0 };
   uint8_t retry = 0;
   uint8_t ret = 0;
-  const int retry_count = 10;
+  int retry_count = 10;
   char strftime_buf[64];
   while(timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count) 
     {
@@ -433,10 +466,10 @@ void stop_webserver(httpd_handle_t server)
 
 
 
-static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
+esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 {
     httpd_handle_t *server = (httpd_handle_t *) ctx;
-    printf("wifi event: %d \n\r", event->event_id);
+    //printf("wifi event: %d \n\r", event->event_id);
     switch (event->event_id) {
         case SYSTEM_EVENT_STA_START:
             esp_wifi_connect();
@@ -444,28 +477,21 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
         case SYSTEM_EVENT_STA_GOT_IP:
             xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
 	    wifi_connected = 1;
-	    //wifi_retry_num = 0;
-	    //mqtt_app_start();
-            if (*server == NULL) 
-	    {
-	       *server = start_webserver();
-            }
+            //if (*server == NULL) 
+	    //{
+	    //   *server = start_webserver();
+            //}
             break;
         case SYSTEM_EVENT_STA_DISCONNECTED:
 	    wifi_connected = 0;
-	    //mqtt_app_stop();
-	    //if (wifi_retry_num < 10)
-	    //  {
             esp_wifi_connect();
-	    //  wifi_retry_num++;
-	    //  }
             xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
 
-	    if (*server) 
-	    {
-		     stop_webserver(*server);
-		     *server = NULL;
-            }
+	    //if (*server) 
+	    //{
+	//	     stop_webserver(*server);
+	//	     *server = NULL;
+          //  }
             break;
         default:
             break;
@@ -478,8 +504,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
 {
   char c[5];
   uint8_t len, let;
-  char tmp1[MAX_TEMP_BUFFER];
-  char tmp2[MAX_TEMP_BUFFER]; 
+  uint8_t ret;
   char parse_topic[MAX_TEMP_BUFFER];
   char parse_data[MAX_TEMP_BUFFER]; 
   /// funkce pro nastavovani modulu
@@ -510,33 +535,118 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     printf("Chyba cJSON: %s\n\r", parse_data);
     }
 
-
-  printf("%s || %s\n\r", parse_topic, tmp1);
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  else
   {
-    tmp1[0] = 0;
-    uint8_t j = 0;
-    for (uint8_t p = len; p < let; p++)
+    printf("%s || %s\n\r", parse_topic, tmp1);
+    if (strncmp(parse_topic, tmp1, len) == 0)
     {
-      tmp1[j] = parse_topic[p];
-      tmp1[j + 1] = 0;
-      j++;
-    }
-
-
-    if (strcmp(tmp1, "set/network") == 0 && valid_json == 1)
+      tmp1[0] = 0;
+      uint8_t j = 0;
+      for (uint8_t p = len; p < let; p++)
       {
-      const cJSON *nazev = NULL;
-      nazev = cJSON_GetObjectItemCaseSensitive(json, "nazev");
-      if (cJSON_IsString(nazev) && (nazev->valuestring != NULL) && strlen(nazev->valuestring) < 8)
-        {
-	strcpy(device.nazev, nazev->valuestring);
-	printf("Novy nazev: %s", device.nazev);
-	}	      
-
+       tmp1[j] = parse_topic[p];
+       tmp1[j + 1] = 0;
+       j++;
       }
 
-  
+
+      if (strcmp(tmp1, "at") == 0 && valid_json == 1)
+        {
+        cJSON *cmd = NULL;
+	cJSON *args = NULL;
+	cJSON *id = NULL;
+	cmd = cJSON_GetObjectItemCaseSensitive(json, "cmd");
+	args = cJSON_GetObjectItemCaseSensitive(json, "args");
+	id = cJSON_GetObjectItemCaseSensitive(json, "id");
+	if (cJSON_IsString(cmd) && cJSON_IsString(args) && cJSON_IsNumber(id))
+	  {
+          rs_send_at(id->valueint, cmd->valuestring, args->valuestring);
+          printf("Sending at\n\r");	  
+	  }
+        }
+
+
+      if (strcmp(tmp1, "set/network") == 0 && valid_json == 1)
+        {
+        cJSON *nazev = NULL;
+        nazev = cJSON_GetObjectItemCaseSensitive(json, "nazev");
+        if (cJSON_IsString(nazev) && (nazev->valuestring != NULL) && strlen(nazev->valuestring) < 8)
+          {
+	  strcpy(device.nazev, nazev->valuestring);
+	  printf("Novy nazev: %s\n\r", device.nazev);
+	  reload_network = 1;
+	  }	      
+        }
+
+        cJSON *ip = NULL;
+        ip = cJSON_GetObjectItemCaseSensitive(json, "ip");
+        if (cJSON_IsString(ip) && (ip->valuestring != NULL) )
+	 {
+	 if (inet_aton(ip->valuestring, &device.myIP) != 0)
+	  {
+	  printf("Nova ip adresa: %d.%d.%d.%d\n\r", device.myIP[0], device.myIP[1], device.myIP[2], device.myIP[3]);
+          reload_network = 1;
+	  }
+         else
+	  printf("!! spatny format ip adresy");	
+	 }
+
+        cJSON *mask = NULL;
+        mask = cJSON_GetObjectItemCaseSensitive(json, "mask");
+        if (cJSON_IsString(mask) && (mask->valuestring != NULL) )
+         {
+         if (inet_aton(mask->valuestring, &device.myMASK) != 0)
+           {
+           printf("Nova maska site: %d.%d.%d.%d\n\r", device.myMASK[0], device.myMASK[1], device.myMASK[2], device.myMASK[3]);
+           reload_network = 1;
+           }
+         else
+           printf("!! spatny format masky site");
+         }
+
+        cJSON *gw = NULL;
+        gw = cJSON_GetObjectItemCaseSensitive(json, "gw");
+        if (cJSON_IsString(gw) && (gw->valuestring != NULL) )
+         {
+         if (inet_aton(gw->valuestring, &device.myGW) != 0)
+           {
+           printf("Nova gw ip: %d.%d.%d.%d\n\r", device.myGW[0], device.myGW[1], device.myGW[2], device.myGW[3]);
+           reload_network = 1;
+           }
+         else
+           printf("!! spatny format vychozi brany");
+         }
+
+        cJSON *dns = NULL;
+        dns = cJSON_GetObjectItemCaseSensitive(json, "dns");
+        if (cJSON_IsString(dns) && (dns->valuestring != NULL) )
+         {
+         if (inet_aton(dns->valuestring, &device.myDNS) != 0)
+           {
+           printf("Nova dns ip: %d.%d.%d.%d\n\r", device.myDNS[0], device.myDNS[1], device.myDNS[2], device.myDNS[3]);
+           reload_network = 1;
+           }
+         else
+           printf("!! spatny format dns");
+         }
+
+        cJSON *broker = NULL;
+        broker = cJSON_GetObjectItemCaseSensitive(json, "mqtt");
+        if (cJSON_IsString(broker) && (broker->valuestring != NULL) )
+         {
+         if (inet_aton(broker->valuestring, &device.mqtt_server) != 0)
+           {
+           printf("Nova nova adresa mqtt serveru: %d.%d.%d.%d\n\r", device.mqtt_server[0], device.mqtt_server[1], device.mqtt_server[2], device.mqtt_server[3]);
+           reload_network = 1;
+           }
+         else
+           printf("!! spatny format adresy mqtt serveru");
+         }
+
+
+    cJSON_Delete(json);
+    }
+
   }
 }
 
@@ -545,7 +655,6 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
 //////////////////////////////////////////////////////////////////////////////////////////////////
 void mqtt_subscribe(void)
 {
-  char tmp1[64];
   strcpy(tmp1, "/regulatory/");
   strcat(tmp1, device.nazev);
   strcat(tmp1, "/#");
@@ -554,13 +663,13 @@ void mqtt_subscribe(void)
 
 
 
-static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
+esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id = 0;
     // your_context_t *context = event->context;
     //
-    printf("mqtt event = %d\n\r", event->event_id);
+    //printf("mqtt event = %d\n\r", event->event_id);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
 	    mqtt_connected = 1;
@@ -587,13 +696,14 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
             printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
             printf("DATA=%.*s\r\n", event->data_len, event->data);
 	    procces_mqtt_json(event->topic, event->topic_len, event->data, event->data_len);
+	    callback_30_second("jep");
             break;
         case MQTT_EVENT_ERROR:
             //ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
-	    mqtt_connected = 2;
+	    //mqtt_connected = 0;
             break;
 	case MQTT_EVENT_BEFORE_CONNECT:
-	    mqtt_connected = 2;
+	    //mqtt_connected = 0;
 	    break;
         default:
             //ESP_LOGI(TAG, "Other event id:%d", event->event_id);
@@ -606,7 +716,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 
 
 
-static void wifi_init(void *arg)
+void wifi_init(void *arg)
 {
     tcpip_adapter_ip_info_t ipInfo;
     nvs_flash_init();
@@ -645,7 +755,7 @@ static void wifi_init(void *arg)
 
 
 
-static void mqtt_app_start(void)
+void mqtt_init(void)
 {
   esp_mqtt_client_config_t mqtt_cfg = { };
   char mqtt[64];
@@ -660,17 +770,12 @@ static void mqtt_app_start(void)
   printf("mqtt broker uri=%s\n\r", mqtt);
   
   mqtt_cfg.event_handle = mqtt_event_handler; 
-
+  mqtt_cfg.disable_auto_reconnect = false;
   mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
   esp_mqtt_client_set_uri(mqtt_client, mqtt);
-  //esp_mqtt_client_start(mqtt_client);
+  esp_mqtt_client_start(mqtt_client);
 }
 
-static void mqtt_app_stop(void)
-{
-    esp_mqtt_client_stop(mqtt_client);
-    free(mqtt_client);
-}
 
 
 
@@ -682,12 +787,14 @@ void setup(void)
      .data_bits = UART_DATA_8_BITS,
      .parity    = UART_PARITY_DISABLE,
      .stop_bits = UART_STOP_BITS_1,
-     .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+     .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+     .rx_flow_ctrl_thresh = 122
   };
 
   uart_param_config(UART_NUM_2, &uart_config);
-  uart_set_pin(UART_NUM_2, RS_TXD, RS_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS);
-  uart_driver_install(UART_NUM_2, 1024 * 2, 0, 0, NULL, 0);
+  uart_set_pin(UART_NUM_2, RS_TXD, RS_RXD, RS_RTS, RS_CTS);
+  uart_driver_install(UART_NUM_2, RS_BUF_SIZE, RS_BUF_SIZE, 0, NULL, 0);
+  uart_set_mode(UART_NUM_2, UART_MODE_RS485_HALF_DUPLEX);
 
   ds2482_address[0].i2c_addr = 0b0011000;
   ds2482_address[0].HWwirenum = 0;
@@ -951,8 +1058,6 @@ uint8_t one_hw_search_device(uint8_t idx)
 ///////////////////////////////////////////////////////////////////////////////////
 void check_function(void)
 {
-    char tmp1[128];     
-    char tmp2[128];
     uint8_t start_count, itmp;
 
     for (uint8_t init = 0; init < 12; init++)
@@ -1036,7 +1141,7 @@ void check_function(void)
 	{
 	GLCD_GotoXY(0, 16);
 	GLCD_PrintString("start wifi");
-        static httpd_handle_t server = NULL;
+        httpd_handle_t server = NULL;
         wifi_init(&server);
 	}
       /// inicializace mqqt protokolu
@@ -1044,7 +1149,7 @@ void check_function(void)
         {
 	GLCD_GotoXY(0, 16);
 	GLCD_PrintString("init mqtt");
-        mqtt_app_start();
+        mqtt_init();
         }
       /// overeni funkce RTC
       if (init == 7)
@@ -1104,12 +1209,22 @@ void check_function(void)
     }
 
 }
+
+void printJsonObject(cJSON *item)
+{
+    char *json_string = cJSON_Print(item);
+    if (json_string)
+    {
+        printf("%s\n", json_string);
+        cJSON_free(json_string);
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// pres mqtt odeslu muj aktualni status, ping + uptime
-void send_mqtt_status(int64_t time_since_boot)
+void send_mqtt_status(void)
 {
-  char tmp1[MAX_TEMP_BUFFER];
-  char tmp2[MAX_TEMP_BUFFER * 2];
+  int64_t time_since_boot = esp_timer_get_time()/1000/1000;
   uint8_t rssi = 0;
   wifi_ap_record_t wifidata;
   strcpy(tmp1, "/regulatory/status/");
@@ -1119,79 +1234,95 @@ void send_mqtt_status(int64_t time_since_boot)
   cJSON *uptime = cJSON_CreateNumber(time_since_boot);
   cJSON_AddItemToObject(status, "ping", live);
   cJSON_AddItemToObject(status, "uptime", uptime);
+  cJSON *heapd = cJSON_CreateNumber(esp_get_free_heap_size());
   if (esp_wifi_sta_get_ap_info(&wifidata)==0)
     {
     rssi =  wifidata.rssi;
     }
   cJSON *wifirssi = cJSON_CreateNumber(rssi);
   cJSON_AddItemToObject(status, "wifi_rssi", wifirssi);
-  strcpy(tmp2, cJSON_Print(status));
+  cJSON_AddItemToObject(status, "heap", heapd);
+  char * string = cJSON_Print(status);
+  for (uint8_t i = 0; i < strlen(string); i++)
+    {
+    tmp2[i] = string[i];
+    tmp2[i+1] = 0;
+    }
+
   esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
+  
+  cJSON_Delete(status);
+  cJSON_free(string);
 }
 ////////////////////////////////////////////////////////////////////////////////////
 /// pres mqtt odeslu nalezene 1wire devices
 void send_mqtt_find_rom(void)
 {
-  char tmp3[1024];
-  char tmp1[MAX_TEMP_BUFFER];
-  char tmp2[MAX_TEMP_BUFFER];
   char c[5];
   for (uint8_t id = 0; id < Global_HWwirenum; id++ )
     {
-    strcpy(tmp2, "/regulatory/1wire/");
+    strcpy(tmp1, "/regulatory/1wire/");
     cJSON *wire = cJSON_CreateObject();
     cJSON *id_driver = cJSON_CreateNumber(ds2482_address[w_rom[id].assigned_ds2482].i2c_addr);
     cJSON *idf = cJSON_CreateNumber(id);
     cJSON *name = cJSON_CreateString(device.nazev);
-    tmp1[0] = 0;
+    tmp2[0] = 0;
     for (uint8_t a = 0; a < 8; a++ )
       {
       itoa(w_rom[id].rom[a], c, 16);
-      strcat(tmp1, c);
+      strcat(tmp2, c);
       if (a < 7)
         {
         c[0] = ':';
         c[1] = 0;
-        strcat(tmp1, c);
+        strcat(tmp2, c);
         }
       }
-    cJSON *rom = cJSON_CreateString(tmp1);
+    cJSON *rom = cJSON_CreateString(tmp2);
     cJSON_AddItemToObject(wire, "id_driver", id_driver);
     cJSON_AddItemToObject(wire, "id", idf);
     cJSON_AddItemToObject(wire, "term_name", name);
     cJSON_AddItemToObject(wire, "rom", rom);
-    strcpy(tmp3, cJSON_Print(wire));
-    esp_mqtt_client_publish(mqtt_client, tmp2, tmp3, 0, 1, 0);
+    char * string = cJSON_Print(wire);
+    tmp3[0] = 0;
+    for (uint8_t i = 0; i < strlen(string); i++)
+      {
+      tmp3[i] = string[i];
+      tmp3[i+1] = 0;
+      }
+
+    esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
+    
+    cJSON_Delete(wire);
+    cJSON_free(string);
+    
     }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 void send_mqtt_tds(void)
 {
-  char tmp3[1024];
-  char tmp1[MAX_TEMP_BUFFER];
-  char tmp2[MAX_TEMP_BUFFER];
   char c[5];
   for (uint8_t i = 0; i < HW_ONEWIRE_MAXROMS; i++)
     {
     if (tds18s20[i].volno == 1)
       {
-      strcpy(tmp2, "/regulatory/ds18s20/");
+      strcpy(tmp1, "/regulatory/ds18s20/");
       cJSON *tds = cJSON_CreateObject();
       cJSON *slotid = cJSON_CreateNumber(i);
       cJSON *term_name = cJSON_CreateString(device.nazev);
-      tmp1[0] = 0;
+      tmp2[0] = 0;
       for (uint8_t a = 0; a < 8; a++ )
         {
         itoa(w_rom[i].rom[a], c, 16);
-        strcat(tmp1, c);
+        strcat(tmp2, c);
         if (a < 7)
           {
           c[0] = ':';
           c[1] = 0;
-          strcat(tmp1, c);
+          strcat(tmp2, c);
           }
         }
-      cJSON *rom = cJSON_CreateString(tmp1);
+      cJSON *rom = cJSON_CreateString(tmp2);
       cJSON *name = cJSON_CreateString(tds18s20[i].nazev);
       cJSON *temp = cJSON_CreateNumber(tds18s20[i].temp);
       cJSON *offset = cJSON_CreateNumber(tds18s20[i].offset);
@@ -1203,11 +1334,40 @@ void send_mqtt_tds(void)
       cJSON_AddItemToObject(tds, "temp", temp);
       cJSON_AddItemToObject(tds, "offset", offset);
       cJSON_AddItemToObject(tds, "online", online);
-      strcpy(tmp3, cJSON_Print(tds));
-      esp_mqtt_client_publish(mqtt_client, tmp2, tmp3, 0, 1, 0);
+      char * string = cJSON_Print(tds);
+      tmp3[0] = 0;
+      for (uint8_t i = 0; i < strlen(string); i++)
+        {
+        tmp3[i] = string[i];
+        tmp3[i+1] = 0;
+        }
+
+      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
+      
+      cJSON_Delete(tds);
+      cJSON_free(string);
+      
       }
     }
 }
+
+
+void show_1wire_status(char *text)
+{
+  strcpy(text, "1wire: ");
+  itoa(Global_HWwirenum, tmp1, 10);
+  strcat(text, tmp1);
+}
+
+
+void show_heap(char *text)
+{
+  strcpy(text, "mem:");
+  itoa(esp_get_free_heap_size()/1024, tmp1, 10);
+  strcat(text, tmp1);
+  strcat(text, "kb");
+}
+
 
 void show_wifi_status(char *text)
 {
@@ -1244,20 +1404,46 @@ void show_time(char *text)
 {
   DateTime now;
   RTC_DS1307_now(&now);
-  sprintf(text, "%.2d:%.2d", now.hour, now.minute);
+  sprintf(text, "%.2d:%.2d:%.2d", now.hour, now.minute, now.second);
+}
+
+void show_uptime(char *text)
+{
+  int32_t time_since_boot = esp_timer_get_time()/1000/1000;
+  sprintf(text, "rt: %ds", time_since_boot);
+
+  if (time_since_boot > 59)
+    {
+    sprintf(text, "rt:%dm", time_since_boot/60);
+    if (time_since_boot % 2 == 0)
+      strcat(text, "*");
+    }
+  if (time_since_boot > (60*60)-1)
+    {
+    sprintf(text, "rt:%dh", time_since_boot/60/60);
+    if (time_since_boot % 2 == 0)
+      strcat(text, "*");
+    }
+  if (time_since_boot > (60*60*24)-1)
+    {
+    sprintf(text, "rt:%dd", time_since_boot/60/60*24);
+    if (time_since_boot % 2 == 0)
+      strcat(text, "*");
+    }
 }
 
 void show_screen(void)
 {
   char str1[20];
-  char str2[32];
+  //char str2[32];
   GLCD_Clear();
+  str1[0]=0;
 
   GLCD_GotoXY(0, 0);
   show_time(str1);
   GLCD_PrintString(str1);
 
-  GLCD_GotoXY(0,10);
+  GLCD_GotoXY(0,9);
   show_rssi(str1);
   GLCD_PrintString(str1);
 
@@ -1265,18 +1451,24 @@ void show_screen(void)
   show_mqtt_status(str1);
   GLCD_PrintString(str1);
 
-  GLCD_GotoXY(64,10);
+  GLCD_GotoXY(64,9);
   show_wifi_status(str1);
   GLCD_PrintString(str1);
 
+  GLCD_GotoXY(0,22);
+  show_heap(str1);
+  GLCD_PrintString(str1);
+
+  GLCD_GotoXY(64,22);
+  show_uptime(str1);
+  GLCD_PrintString(str1);
 
   GLCD_Render();
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-static void callback_one_second(void* arg)
+void callback_one_second(void* arg)
 {
-  int64_t time_since_boot = esp_timer_get_time();
   mereni_hwwire_18s20(2);
 
   tcpip_adapter_ip_info_t ipInfo;
@@ -1292,7 +1484,14 @@ static void callback_one_second(void* arg)
   */
  
   show_screen(); 
+  printf("free: %d\n\r", esp_get_free_heap_size());
+  
+  int32_t time_since_boot = esp_timer_get_time()/1000/1000;
+  printf("uptime: %d\n\n", time_since_boot);
+  show_time(str);
+  printf("aktual cas: %s\n\r", str);
 
+  printf("----\n\r");
 
 
   if (reload_network == 1)
@@ -1302,39 +1501,41 @@ static void callback_one_second(void* arg)
   }
 }
 
-static void callback_30_second(void* arg)
+void callback_30_second(void* arg)
 {
   int64_t time_since_boot = esp_timer_get_time()/1000/1000;
-  if (wifi_connected == 1 && mqtt_connected == 0)
-    {
-    /// inicializace je hotova
-    esp_mqtt_client_start(mqtt_client); 
-    printf("Start mqtt client\n\r");
-    }
-
-  if (wifi_connected == 0 && mqtt_connected == 1)
-    {
-    mqtt_app_stop();
-    printf("Stop mqtt client\n\r");
-    }
- 
-  if (mqtt_connected == 2)
-    {
-    mqtt_app_stop();
-    printf("Stop critical mqtt client\n\r");
-    mqtt_connected = 0;
-    }
+  /// hledam nove 1wire zarizeni
+  Global_HWwirenum = 0;
+  for (uint8_t i = 0; i < 2; i++ )
+     one_hw_search_device(i);
 
 
   if (mqtt_connected == 1)
     {
-    send_mqtt_status(time_since_boot);
+    send_mqtt_status();
     send_mqtt_find_rom();
     send_mqtt_tds();
     }
-  else
-    printf("mqtt not connected\n\r");
+
+
 }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void rs_task(void* args)
+{
+  uint8_t* data = (uint8_t*) malloc(RS_BUF_SIZE);
+  while(1)
+    {
+    int len = uart_read_bytes(UART_NUM_2, data, RS_BUF_SIZE, PACKET_READ_TICS);
+    if (len)
+	    printf("prijaty at: %s", data);
+    }
+
+ free(data);
+
+}
+
 
 /////////////////////////////////////////
 ////////////////////////////////////////
@@ -1343,27 +1544,18 @@ void app_main()
   setup();
   check_function();
 
-  const esp_timer_create_args_t periodic_timer_args_one_sec = {
-          .callback = &callback_one_second,
-          /* name is optional, but may help identify the timer when debugging */
-          .name = "one_second"
-    };
+  const esp_timer_create_args_t periodic_timer_args_one_sec = {.callback = &callback_one_second, .name = "one_second" };
+  const esp_timer_create_args_t periodic_timer_args_30_sec = {.callback = &callback_30_second, .name = "30_second" };
 
-  const esp_timer_create_args_t periodic_timer_args_30_sec = {
-	.callback = &callback_30_second,
-	.name = "30_second"
-  };
+  xTaskCreate(rs_task, "rs_task", RS_TASK_STACK_SIZE, NULL, RS_TASK_PRIO, NULL);
 
   esp_timer_handle_t periodic_timer_one_sec;
-  ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args_one_sec, &periodic_timer_one_sec));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer_one_sec, 1000000));
+  esp_timer_create(&periodic_timer_args_one_sec, &periodic_timer_one_sec);
+  esp_timer_start_periodic(periodic_timer_one_sec, 1000000);
 
   esp_timer_handle_t periodic_timer_30_sec;
-  ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args_30_sec, &periodic_timer_30_sec));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer_30_sec, 30000000));
-
-
-
+  esp_timer_create(&periodic_timer_args_30_sec, &periodic_timer_30_sec);
+  esp_timer_start_periodic(periodic_timer_30_sec, 30000000);
 }
 
 

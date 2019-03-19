@@ -24,7 +24,7 @@ GLCD_t __GLCD;
 //---------------------------//
 
 //----- Prototypes ----------------------------//
-static void GLCD_Send(const uint8_t Control,  uint8_t *Data, const uint8_t Length);
+static void GLCD_Send(uint8_t Control,  uint8_t *Data, uint8_t Length);
 static void GLCD_BufferWrite(const uint8_t X, const uint8_t Y, const uint8_t Data);
 static uint8_t GLCD_BufferRead(const uint8_t X, const uint8_t Y);
 static void GLCD_DrawHLine(uint8_t X1, uint8_t X2, const uint8_t Y, enum Color_t Color);
@@ -1097,7 +1097,7 @@ void GLCD_PrintDouble(double Value, const uint32_t Tens)
 	}
 }
 
-static void GLCD_Send(const uint8_t Control, uint8_t *Data, const uint8_t Length)
+static void GLCD_Send(uint8_t Control, uint8_t *Data, uint8_t Length)
 {
 	esp_err_t ret;
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
