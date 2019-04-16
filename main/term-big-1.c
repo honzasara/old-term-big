@@ -31,7 +31,8 @@
 
 #include "cJSON.h"
 
-#define EXAMPLE_ESP_MAXIMUM_RETRY 5
+#include "term-big-1.h"
+
 
 #define RS_TXD  (GPIO_NUM_17) 
 #define RS_RXD  (GPIO_NUM_16)
@@ -49,10 +50,6 @@
 
 #define I2C_MEMORY_ADDR 0x50
 #define DS1307_ADDRESS  0x68
-
-#define eeprom_start_stored_device 100
-#define eeprom_start_my_device 10
-#define eeprom_start_wifi_setup 3200
 
 
 #include "SSD1306.h"
@@ -81,19 +78,7 @@ uint8_t wifi_connected = 0;
 uint8_t mqtt_connected = 0;
 
 uint8_t reload_network = 1;
-
-struct struct_my_device
-{
-  uint8_t myIP[4];
-  uint8_t myMASK[4];
-  uint8_t myDNS[4];
-  uint8_t myGW[4];
-  char nazev[8];
-  char mqtt_uri[60];
-  char wifi_essid[20];
-  char wifi_pass[20];
-  uint8_t ip_static;
-} device;
+ 
 
 
 struct struct_DDS18s20
@@ -134,17 +119,6 @@ typedef struct
   uint8_t rom[8];
   char name[8];
 } struct_mac;
-
-struct struct_remote_room_thermostat
-{
-  int light;
-  uint8_t term_mode;
-  uint8_t programs;
-  uint8_t active_program;
-  float term_threshold[3];
-  char term_name[3][10];
-  uint8_t ready ;
-} remote_room_thermostat[32];
 
 struct struct_remote_wire
 {
@@ -188,19 +162,6 @@ typedef struct
 } DateTime;
 
 
-#define ROOM_CONTROL 1
-typedef struct
-{
-uint8_t type;
-uint8_t version;
-uint32_t stamp;
-uint8_t ready;
-char name[10];
-} rs_device_t;
-
-
-rs_device_t rs_device[32];
-
 uint8_t find_rsid = 0;
 uint8_t enable_send_network_status = 0;
 
@@ -214,6 +175,8 @@ void function_ds18s20_unannounced_rom(uint8_t slot);
 void function_ds18s20_announced_rom(uint8_t idx);
 void function_ds18s20_set_offset(uint8_t slot, int offset);
 void function_ds18s20_set_name(uint8_t slot, const char* name);
+esp_err_t i2c_eeprom_readByte(uint8_t deviceAddress, uint16_t address, uint8_t *data);
+esp_err_t i2c_eeprom_writeByte(uint8_t deviceAddress, uint16_t address, uint8_t data);
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void new_parse_at(char *input, char *out1, char *out2)
@@ -480,40 +443,80 @@ esp_err_t twi_init(i2c_port_t t_i2c_num)
   return ret;
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+httpd_uri_t set_program = {
+    .uri       = "/set_timeprogram.html",
+    .method    = HTTP_POST,
+    .handler   = set_program_handler,
+    .user_ctx  = "NULL"
+};
 
+httpd_uri_t set_rsid_name = {
+    .uri       = "/set_rsid_name.html",
+    .method    = HTTP_POST,
+    .handler   = set_rsid_name_handler,
+    .user_ctx  = "NULL"
+};
 
-
-httpd_uri_t hello = {
+httpd_uri_t get_index = {
     .uri       = "/index.html",
     .method    = HTTP_GET,
     .handler   = index_get_handler,
-    /* Let's pass response string in user
-     * context to demonstrate it's usage */
     .user_ctx  = "Hello World!"
 };
+
+httpd_uri_t get_rsid = {
+    .uri       = "/rsid.html",
+    .method    = HTTP_GET,
+    .handler   = rsid_get_handler,
+    .user_ctx  = "Hello World!"
+};
+
+httpd_uri_t get_thermostat = {
+    .uri       = "/thermostat.html",
+    .method    = HTTP_GET,
+    .handler   = thermostat_get_handler,
+    .user_ctx  = "NULL"
+};
+
+httpd_uri_t get_timeprogram = {
+    .uri       = "/timeprogram.html",
+    .method    = HTTP_GET,
+    .handler   = timeprogram_get_handler,
+    .user_ctx  = "NULL"
+};
+
+httpd_uri_t get_newprogram = {
+    .uri       = "/newp.html",
+    .method    = HTTP_GET,
+    .handler   = new_program_handler,
+    .user_ctx  = "NULL"
+};
+
 
 
 httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-
-    // Start the httpd server
-    //ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
+    config.stack_size = 8196*2;
     if (httpd_start(&server, &config) == ESP_OK) 
       {
-        // Set URI handlers
-        //ESP_LOGI(TAG, "Registering URI handlers");
-        httpd_register_uri_handler(server, &hello);
-        //httpd_register_uri_handler(server, &echo);
-        //httpd_register_uri_handler(server, &ctrl);
+        httpd_register_uri_handler(server, &get_index);
+        httpd_register_uri_handler(server, &get_rsid);
+        httpd_register_uri_handler(server, &set_rsid_name);
+        httpd_register_uri_handler(server, &get_thermostat);
+        httpd_register_uri_handler(server, &get_timeprogram);
+        httpd_register_uri_handler(server, &get_newprogram);	
+        httpd_register_uri_handler(server, &set_program);	
         return server;
       }
-
-    //ESP_LOGI(TAG, "Error starting server!");
     return NULL;
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
 void stop_webserver(httpd_handle_t server)
 {
   httpd_stop(server);
@@ -904,9 +907,205 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     }
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//// potrebuji zjistit obsazeni timeplanu, je zbytecne vsechno nacitat
+uint8_t check_timeplan(uint8_t id)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, &low);
+  if (low == 1) ret = 1;
+  return ret;
+}
 
+/// nacita casove plany
+uint8_t load_timeplan(uint8_t id, timeplan_t *tp)
+{
+  uint8_t low;
+  uint8_t ret = 0;
+  if (id < max_timeplan )
+  {
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id), &low);
+    tp->start_min = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 1, &low);
+    tp->start_hour = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 2, &low);
+    tp->stop_min = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 3, &low);
+    tp->stop_hour = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 4, &low);
+    tp->week_day = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 5, &low);
+    tp->active = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, &low);
+    tp->free = low;
+    for (uint8_t i=0; i < 8; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 7+i, &low);
+      tp->name[i] = low;
+      }
+    ret = 1;
+  }
+  return ret;
+}
+///////////
+/// ulozi casovy plan
+void save_timeplan(uint8_t id, timeplan_t *tp)
+{
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id), tp->start_min);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 1, tp->start_hour);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 2, tp->stop_min);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 3, tp->stop_hour);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 4, tp->week_day);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 5, tp->active);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, tp->free);
+  for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 7+i, tp->name[i]); 
+}
+//////////
+/// vymaze casovy plan
+void clear_timeplan(uint8_t id)
+{
+  timeplan_t tp;
+  if (id == 255)
+    {
+    for (uint8_t i = 0; i< max_timeplan; i++)
+      {
+      tp.free = 0;
+      tp.active = 0;
+      sprintf(tp.name, "free %d", i);
+      save_timeplan(i, &tp);
+      }
+    }
+  else
+    {
+    if (id > 0 && id < max_timeplan)
+      {
+      tp.free = 0;
+      tp.active = 0;
+      sprintf(tp.name, "free %d", id);
+      save_timeplan(id, &tp);
+      }
+    }
+}
+//////////////////////////////////////////////
+//
 
+void clear_programplan(uint8_t id)
+{
+  programplan_t pp;
+  if (id == 255)
+    {
+    for (uint8_t i = 0; i< max_programplan; i++)
+      {
+      pp.free = 0;
+      pp.active = 0;
+      sprintf(pp.name, "free %d", i);
+      for (uint8_t j = 0; j < 10; j++) pp.timeplan[j] = 255;
+      save_programplan(i, &pp);
+      }
+    }
+  else
+    {
+    if (id > 0 && id < max_programplan)
+      {
+      pp.free = 0;
+      pp.active = 0;
+      sprintf(pp.name, "free %d", id);
+      for (uint8_t j = 0; j < 10; j++) pp.timeplan[j] = 255;
+      save_programplan(id, &pp);
+      } 
+    }
+}
 //////////////////////////////////////////////////////////////////////////////////////////////////
+uint8_t check_programplan(uint8_t id)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 1, &low);
+  if (low == 1) ret = 1;
+  return ret;
+}
+
+uint8_t load_programplan(uint8_t id, programplan_t *pp)
+{
+  uint8_t low;
+  uint8_t ret = 0;
+  if (id < max_programplan)
+    {
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id), &low);
+    pp->active = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 1, &low);
+    pp->free = low;
+    for (uint8_t i=0; i < 10; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 2 + i, &low);
+      pp->timeplan[i] = low;
+      }
+    for (uint8_t i=0; i < 8; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 12 + i, &low);
+      pp->name[i] = low;
+      }
+    ret = 1;
+    }
+return ret;
+}
+
+///
+uint8_t save_programplan(uint8_t id, programplan_t *pp)
+{
+  uint8_t ret = 0;
+  if (id < max_programplan)
+    {
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id), pp->active);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 1, pp->free);
+    for (uint8_t i=0; i < 10; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 2 +i, pp->timeplan[i]);
+    for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 12 +i, pp->name[i]);
+    ret = 1;
+    }
+  return ret;
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////
+///
+void new_termostat_program(void)
+{
+  programplan_t pp;
+  for (uint8_t id = 0; id < max_programplan; id++)
+    {
+    load_programplan(id, &pp);
+    if ((pp.free == 0) || (pp.free == 255))
+      {
+      pp.free = 1;
+      sprintf(pp.name, "Novy %d", id);
+      save_programplan(id, &pp);
+      printf("Novy programplan na indexu: %d\n\r", id);
+      break;
+      }
+    }
+
+}
+///
+///
+////////////////////////////////////////////////////////
+//
+void new_timeplan(void)
+{
+  timeplan_t tp;
+  for (uint8_t id = 0; id < max_timeplan; id++)
+    {
+    load_timeplan(id, &tp);
+    if ((tp.free == 0) || (tp.free == 255))
+      {
+      tp.free = 1;
+      sprintf(tp.name, "Novy %d", id);
+      save_timeplan(id, &tp);
+      printf("Novy timeplan na indexu: %d\n\r", id);
+      break;
+      }
+    }
+}
+///
+///
 void mqtt_subscribe(void)
 {
   strcpy(tmp1, "/regulatory/");
@@ -917,9 +1116,12 @@ void mqtt_subscribe(void)
   strcpy(tmp1, "/regulatory/global/#");
   esp_mqtt_client_subscribe(mqtt_client, tmp1, 0);
 }
+///////////////////////////////////////
+//
 
 
 
+//
 esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 {
     //client = event->client;
@@ -1068,6 +1270,8 @@ void setup(void)
   GLCD_GotoXY(0, 16);
   GLCD_PrintString("booting ...");
 
+  clear_programplan(255);
+  clear_timeplan(255);
 }
 
 
@@ -1821,9 +2025,9 @@ void send_rs_device(void)
     {
     if (rs_device[rsid].ready == 1)
       {
-      rs_device[rsid].ready = 0;
       cJSON *rs_dev = cJSON_CreateObject();
       cJSON *rs_id = cJSON_CreateNumber(rsid);
+      cJSON *rs_online = cJSON_CreateNumber(rs_device[rsid].online);
       cJSON *rs_type = cJSON_CreateNumber(rs_device[rsid].type);
       cJSON *rs_version = cJSON_CreateNumber(rs_device[rsid].version);
       cJSON *rs_stamp = cJSON_CreateNumber(rs_device[rsid].stamp);
@@ -1836,6 +2040,7 @@ void send_rs_device(void)
       cJSON_AddItemToObject(rs_dev, "name", rs_name);
       cJSON_AddItemToObject(rs_dev, "term_name", term_name);
       cJSON_AddItemToObject(rs_dev, "stamp", rs_stamp);
+      cJSON_AddItemToObject(rs_dev, "online", rs_online);
 
       char * string = cJSON_Print(rs_dev);
       tmp3[0] = 0;
@@ -1860,7 +2065,6 @@ void send_wire_tds(void)
     {
     if (remote_tds[rsid].ready == 1)
       {
-      remote_tds[rsid].ready = 0;
       cJSON *rem_tds = cJSON_CreateObject();
       cJSON *rs_id = cJSON_CreateNumber(rsid);
       cJSON *rs_stamp = cJSON_CreateNumber(remote_tds[rsid].stamp);
@@ -1915,7 +2119,6 @@ void send_remote_wire(void)
     {
     if (remote_wire[rsid].ready == 1)
       {
-      remote_wire[rsid].ready = 0;
       cJSON *rem_wire = cJSON_CreateObject();
       cJSON *ids = cJSON_CreateArray();
 
@@ -1978,7 +2181,6 @@ void send_thermostat_status(void)
     {
     if (remote_room_thermostat[rsid].ready == 1)
       {
-      remote_room_thermostat[rsid].ready = 0;
       cJSON *rem_therm = cJSON_CreateObject();
       cJSON *ids = cJSON_CreateArray();
       cJSON *rs_id = cJSON_CreateNumber(rsid);
@@ -2145,12 +2347,8 @@ void show_screen(void)
 void sync_rs_device(void)
 {
   rs_send_at(find_rsid, "sync", "NULL");
-  if (remote_tds[find_rsid].ready == 2) remote_tds[find_rsid].ready = 0;
-  if (remote_wire[find_rsid].ready == 2) remote_wire[find_rsid].ready = 0;
-  if (rs_device[find_rsid].ready == 2) rs_device[find_rsid].ready = 0;
-  if (remote_tds[find_rsid].ready == 1) remote_tds[find_rsid].ready = 2;
-  if (remote_wire[find_rsid].ready == 1) remote_wire[find_rsid].ready = 2;
-  if (rs_device[find_rsid].ready == 1) rs_device[find_rsid].ready = 2;
+  if (rs_device[find_rsid].online == 2) rs_device[find_rsid].online = 0;
+  if (rs_device[find_rsid].online == 1) rs_device[find_rsid].online = 2;
   find_rsid++;
   if (find_rsid >= 32)
     find_rsid = 0;
@@ -2260,7 +2458,7 @@ void add_at_input_command_buffer(char *data, uint8_t len)
   if (strcmp(cmd, "gtdsoffset") == 0)
     {
     new_parse_at(args, str1, str2);
-    remote_tds[rsid].id[atoi(str1)].offset = atoi(str2i);
+    remote_tds[rsid].id[atoi(str1)].offset = atoi(str2);
     }
 
   if (strcmp(cmd, "gt") == 0)
@@ -2337,6 +2535,7 @@ void add_at_input_command_buffer(char *data, uint8_t len)
       rs_device[rsid].version = 1;
       rs_device[rsid].stamp = stamp;
       rs_device[rsid].ready = 1;
+      rs_device[rsid].online = 1;
       }
     }
 }
