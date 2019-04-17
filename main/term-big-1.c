@@ -59,7 +59,6 @@
 #include "global.h"
 #include "ow.h"
 #include "term-big-1.h"
-#include "html.c"
 
 char tmp3[MAX_TEMP_BUFFER];
 char tmp1[MAX_TEMP_BUFFER];
@@ -445,6 +444,7 @@ esp_err_t twi_init(i2c_port_t t_i2c_num)
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
+/*
 httpd_uri_t set_program = {
     .uri       = "/set_timeprogram.html",
     .method    = HTTP_POST,
@@ -493,7 +493,7 @@ httpd_uri_t get_newprogram = {
     .handler   = new_program_handler,
     .user_ctx  = "NULL"
 };
-
+*/
 
 
 httpd_handle_t start_webserver(void)
@@ -503,6 +503,7 @@ httpd_handle_t start_webserver(void)
     config.stack_size = 8196*2;
     if (httpd_start(&server, &config) == ESP_OK) 
       {
+        /*
         httpd_register_uri_handler(server, &get_index);
         httpd_register_uri_handler(server, &get_rsid);
         httpd_register_uri_handler(server, &set_rsid_name);
@@ -510,6 +511,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &get_timeprogram);
         httpd_register_uri_handler(server, &get_newprogram);	
         httpd_register_uri_handler(server, &set_program);	
+	*/
         return server;
       }
     return NULL;
@@ -906,7 +908,6 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     cJSON_Delete(json);
     }
 }
-
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //// potrebuji zjistit obsazeni timeplanu, je zbytecne vsechno nacitat
 uint8_t check_timeplan(uint8_t id)
@@ -917,7 +918,6 @@ uint8_t check_timeplan(uint8_t id)
   if (low == 1) ret = 1;
   return ret;
 }
-
 /// nacita casove plany
 uint8_t load_timeplan(uint8_t id, timeplan_t *tp)
 {
@@ -948,7 +948,6 @@ uint8_t load_timeplan(uint8_t id, timeplan_t *tp)
   }
   return ret;
 }
-///////////
 /// ulozi casovy plan
 void save_timeplan(uint8_t id, timeplan_t *tp)
 {
@@ -961,7 +960,7 @@ void save_timeplan(uint8_t id, timeplan_t *tp)
   i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, tp->free);
   for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 7+i, tp->name[i]); 
 }
-//////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// vymaze casovy plan
 void clear_timeplan(uint8_t id)
 {
@@ -987,9 +986,8 @@ void clear_timeplan(uint8_t id)
       }
     }
 }
-//////////////////////////////////////////////
-//
-
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// vymaze cele program plany
 void clear_programplan(uint8_t id)
 {
   programplan_t pp;
@@ -1016,7 +1014,8 @@ void clear_programplan(uint8_t id)
       } 
     }
 }
-//////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// rychle zjisteni obsazeni program planu
 uint8_t check_programplan(uint8_t id)
 {
   uint8_t ret = 0;
@@ -1025,7 +1024,7 @@ uint8_t check_programplan(uint8_t id)
   if (low == 1) ret = 1;
   return ret;
 }
-
+/// nacteni celeho program planu
 uint8_t load_programplan(uint8_t id, programplan_t *pp)
 {
   uint8_t low;
@@ -1050,8 +1049,7 @@ uint8_t load_programplan(uint8_t id, programplan_t *pp)
     }
 return ret;
 }
-
-///
+/// ulozeni celeho program planu
 uint8_t save_programplan(uint8_t id, programplan_t *pp)
 {
   uint8_t ret = 0;
@@ -1065,8 +1063,8 @@ uint8_t save_programplan(uint8_t id, programplan_t *pp)
     }
   return ret;
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// vytvoreni noveho program planu
 void new_termostat_program(void)
 {
   programplan_t pp;
@@ -1082,12 +1080,9 @@ void new_termostat_program(void)
       break;
       }
     }
-
 }
-///
-///
-////////////////////////////////////////////////////////
-//
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// vytvoreni noveho timeplanu
 void new_timeplan(void)
 {
   timeplan_t tp;
@@ -1104,7 +1099,7 @@ void new_timeplan(void)
       }
     }
 }
-///
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///
 void mqtt_subscribe(void)
 {
@@ -1792,6 +1787,81 @@ void printJsonObject(cJSON *item)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void send_timeplan(void)
+{
+  timeplan_t tp;
+  cJSON *timepl = cJSON_CreateObject();
+  for (uint8_t id = 0; id < max_timeplan; id++)
+    {
+    load_timeplan(id, &tp);
+    if (tp.free == 1)
+      {
+      sprintf(tmp1, "/regulatory/%s/timeplan/%d", device.nazev, id);
+      cJSON *c_start_min = cJSON_CreateNumber(tp.start_min);
+      cJSON *c_start_hour = cJSON_CreateNumber(tp.start_hour);
+      cJSON *c_stop_min = cJSON_CreateNumber(tp.stop_min);
+      cJSON *c_stop_hour = cJSON_CreateNumber(tp.stop_hour);
+      cJSON *c_name = cJSON_CreateString(tp.name);
+      cJSON *c_active = cJSON_CreateNumber(tp.active);
+      cJSON *c_free = cJSON_CreateNumber(tp.free);
+      cJSON *c_id = cJSON_CreateNumber(id);
+      cJSON_AddItemToObject(timepl, "start_min", c_id);
+      cJSON_AddItemToObject(timepl, "start_min", c_start_min);
+      cJSON_AddItemToObject(timepl, "start_hour", c_start_hour);
+      cJSON_AddItemToObject(timepl, "stop_min", c_stop_min);
+      cJSON_AddItemToObject(timepl, "stop_hour", c_stop_hour);
+      cJSON_AddItemToObject(timepl, "name", c_name);
+      cJSON_AddItemToObject(timepl, "active", c_active);
+      cJSON_AddItemToObject(timepl, "free", c_free);
+      cJSON_AddItemToObject(timepl, "id", c_id);
+
+      char * string = cJSON_Print(timepl);
+      for (uint16_t i = 0; i < strlen(string); i++)
+        {
+        tmp2[i] = string[i];
+        tmp2[i+1] = 0;
+        }
+      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
+      cJSON_Delete(timepl);
+      cJSON_free(string);
+      } 
+    }
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void send_programplan(void)
+{
+  programplan_t pp;
+  cJSON *prgpl = cJSON_CreateObject();
+  for (uint8_t id = 0; id < max_programplan; id++)
+    {
+    load_programplan(id, &pp);
+    if (pp.free == 1)
+      {
+      sprintf(tmp1, "/regulatory/%s/programplan/%d", device.nazev, id);
+      cJSON *c_active = cJSON_CreateNumber(pp.active);
+      cJSON *c_free = cJSON_CreateNumber(pp.free);
+      cJSON *c_id = cJSON_CreateNumber(id);
+      cJSON *c_name = cJSON_CreateString(pp.name);
+      cJSON *en = cJSON_CreateIntArray(pp.timeplan, 10);
+      cJSON_AddItemToObject(prgpl, "name", c_name);
+      cJSON_AddItemToObject(prgpl, "active", c_active);
+      cJSON_AddItemToObject(prgpl, "free", c_free);
+      cJSON_AddItemToObject(prgpl, "id", c_id);
+      cJSON_AddItemToObject(prgpl, "timeplans", en);
+
+      char * string = cJSON_Print(prgpl);
+      for (uint16_t i = 0; i < strlen(string); i++)
+        {
+        tmp2[i] = string[i];
+	tmp2[i+1] = 0;
+        }
+      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
+      cJSON_Delete(prgpl);
+      cJSON_free(string);
+      }
+    }
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void send_network_static_config(void)
 {
   strcpy(tmp1, "/regulatory/network/static");
@@ -2417,6 +2487,8 @@ void callback_30_sec(void* arg)
     send_remote_wire();
     send_wire_tds();
     send_thermostat_status();
+    send_programplan();
+    send_timeplan();
     }
   else
     {
