@@ -268,12 +268,9 @@ esp_err_t timeprogram_get_handler(httpd_req_t *req)
   char checked[9];
   checked[0] = 0;
 
-  str3[0] = 0;
-  uint8_t cnt_free = 0;
   for (uint8_t ipp = 0; ipp < max_timeplan; ipp++)
     {
     load_timeplan(ipp, &tp[ipp]);
-    if (tp[ipp].free == 1) cnt_free++;
     }
 
   for (uint8_t id = 0; id < max_programplan; id ++)
@@ -281,23 +278,8 @@ esp_err_t timeprogram_get_handler(httpd_req_t *req)
     if (check_programplan(id) == 1)
       {
       load_programplan(id, &pp);
-      sprintf(str_timeplan, "<select name='ppi_%d' size='%d' multiple>", id, cnt_free );
-      for (uint8_t ipp = 0; ipp < max_timeplan; ipp++)
-	{
-        if (tp[ipp].free == 1)
-	  {
-	  strncpy(str2, tp[ipp].name, 8); 
-          if (tp[ipp].active == 1)
-	    sprintf(str3, "<option value='%s' selected>%s</option>", str2, str2 );
-	  else
-	    sprintf(str3, "<option value='%s'>%s</option>", str2, str2 );
+      
 
-	  strcat(str_timeplan, str3);
-	  printf("str3: %s %d\n\r", str3, strlen(str3));
-	  printf("str_timeplan3: %d\n\r",  strlen(str_timeplan));
-	  }
-	strcat(str_timeplan, "</select>");
-        }
       strncpy(str2, pp.name, 8);
       if (pp.active == 1)
          strcpy(checked, "checked");
