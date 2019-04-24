@@ -573,6 +573,8 @@ esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data_len)
 {
   uint8_t len, let;
+  programplan_t pp;
+  timeplan_t tp;
   char parse_topic[MAX_TEMP_BUFFER];
   char parse_data[MAX_TEMP_BUFFER];
   uint8_t valid_json = 1; 
@@ -596,7 +598,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
   strcpy(tmp1, "/regulatory/global/");
   len = strlen(tmp1);
   let = topic_len;
-  printf("%s - %s , %d\n\r", parse_topic, tmp1, len);
+  //printf("%s - %s , %d\n\r", parse_topic, tmp1, len);
   if (strncmp(parse_topic, tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
@@ -616,7 +618,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       tmp1[j + 1] = 0;
       j++;
       }
-    printf("%s\n\r", tmp1);
+    //printf("%s\n\r", tmp1);
     //// nastaveni casu
     if ((strcmp(tmp1, "set/time") == 0) && (valid_json == 1))
       {
@@ -650,6 +652,114 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     cJSON_Delete(json);
     }
   //////
+  /// funkce termostatu
+  tmp1[0] = 0;
+  sprintf(tmp1, "/regulatory/%s/thermostat/", device.nazev);
+  len = strlen(tmp1);
+  let = topic_len;
+  if (strncmp(parse_topic, tmp1, len) == 0)
+    {
+    cJSON *json = cJSON_Parse(parse_data);
+    if (json == NULL)
+      {
+      valid_json = 0;
+      }
+    else
+      {
+      valid_json = 1;
+      }
+    tmp1[0] = 0;
+    j = 0;
+    for (uint8_t p = len; p < let; p++)
+      {
+      tmp1[j] = topic[p];
+      tmp1[j + 1] = 0;
+      j++;
+      }
+    if ((strcmp(tmp1, "timeplan/set") == 0) && (valid_json == 1))
+      {
+      cJSON *slot_id = NULL;
+      slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
+      cJSON *name = NULL;
+      name = cJSON_GetObjectItemCaseSensitive(json, "name");
+      cJSON *active = NULL;
+      active = cJSON_GetObjectItemCaseSensitive(json, "active");
+      cJSON *free = NULL;
+      free = cJSON_GetObjectItemCaseSensitive(json, "free");
+      cJSON *start_min = NULL;
+      start_min = cJSON_GetObjectItemCaseSensitive(json, "start_min");
+      cJSON *start_hour = NULL;
+      start_hour = cJSON_GetObjectItemCaseSensitive(json, "start_hour");
+      cJSON *stop_min = NULL;
+      stop_min = cJSON_GetObjectItemCaseSensitive(json, "stop_min");
+      cJSON *stop_hour = NULL;
+      stop_hour = cJSON_GetObjectItemCaseSensitive(json, "stop_hour");
+      cJSON *week_day = NULL;
+      week_day = cJSON_GetObjectItemCaseSensitive(json, "week_day");
+      cJSON *condition = NULL;
+      condition = cJSON_GetObjectItemCaseSensitive(json, "condition");
+      cJSON *threshold = NULL;
+      threshold = cJSON_GetObjectItemCaseSensitive(json, "threshold");
+      uint8_t change = 0;
+      if (cJSON_IsNumber(slot_id))
+        {
+        if (cJSON_IsString(name) && strlen(name->valuestring) < 8) {strcpy(tp.name, name->valuestring); change = 1;}
+	if (cJSON_IsNumber(active)) {tp.active = active->valueint; change = 1;}
+	if (cJSON_IsNumber(free)) {tp.free = free->valueint; change = 1;}
+	if (cJSON_IsNumber(condition)) {tp.condition = condition->valueint; change = 1;}
+	if (cJSON_IsNumber(threshold)) {tp.threshold = threshold->valuedouble; change = 1;}
+        if (cJSON_IsNumber(start_min) && cJSON_IsNumber(start_hour) && cJSON_IsNumber(stop_min) && cJSON_IsNumber(stop_hour))
+	  {
+	  change = 1;
+	  tp.start_min = start_min->valueint;
+	  tp.start_hour = start_hour->valueint;
+	  tp.stop_min = stop_min->valueint;
+	  tp.stop_hour = stop_hour->valueint;
+	  tp.week_day = week_day->valueint;
+	  }
+	if (change == 1) save_timeplan(slot_id->valueint, &tp);
+        }
+      }
+
+    if ((strcmp(tmp1, "programplan/set") == 0) && (valid_json == 1))
+      {
+      cJSON *slot_id = NULL;
+      slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
+      cJSON *name = NULL;
+      name = cJSON_GetObjectItemCaseSensitive(json, "name");
+      cJSON *active = NULL;
+      active = cJSON_GetObjectItemCaseSensitive(json, "active");
+      cJSON *free = NULL;
+      free = cJSON_GetObjectItemCaseSensitive(json, "free");
+      cJSON *tp = NULL;
+      tp = cJSON_GetObjectItemCaseSensitive(json, "timeplans");
+      cJSON *arr = NULL;
+      uint8_t change = 0;
+      if (cJSON_IsNumber(slot_id))
+        {
+        if (cJSON_IsString(name) && strlen(name->valuestring) < 8) {strcpy(pp.name, name->valuestring); change = 1;}
+        if (cJSON_IsNumber(active)) {pp.active = active->valueint; change = 1;}
+	if (cJSON_IsNumber(free)) {pp.free = free->valueint; change = 1;}
+	if (cJSON_IsArray(tp))
+	  {
+          j = 0;
+	  arr = tp->child;
+	  while ((arr != NULL) && (j < 10))
+	    {
+	    change = 1;
+	    //printf("%d \n\r", arr->valueint);
+	    pp.timeplan[j] = arr->valueint;
+	    arr = arr->next;
+	    j++;
+	    }
+	  }
+	if (change == 1) save_programplan(slot_id->valueint, &pp);
+	}
+      }
+    cJSON_Delete(json);
+    }
+
+
   /// funkce nastaveni ds18s20
   tmp1[0] = 0;
   strcpy(tmp1, "/regulatory/");
@@ -909,6 +1019,29 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+float IntToFloat(uint8_t *number)
+{
+  union {
+    byte b[4];
+    float f;
+  } data;
+  for (int i = 0; i < 4; i++) data.b[i] = number[i];
+  return  data.f;
+}
+
+void FloatToInt(float x, uint8_t *number)
+{
+  union {
+    byte b[4];
+    float f;
+  } data;
+  data.f = x;
+  for (int i = 0; i < 4; i++) number[i] = data.b[i];
+}
+///////////////////////////////////////////////////////////////////////////////////////////
+
 //// potrebuji zjistit obsazeni timeplanu, je zbytecne vsechno nacitat
 uint8_t check_timeplan(uint8_t id)
 {
@@ -923,27 +1056,38 @@ uint8_t load_timeplan(uint8_t id, timeplan_t *tp)
 {
   uint8_t low;
   uint8_t ret = 0;
+  uint8_t fl[4];
   if (id < max_timeplan )
   {
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id), &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id), &low);
     tp->start_min = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 1, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 1, &low);
     tp->start_hour = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 2, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 2, &low);
     tp->stop_min = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 3, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 3, &low);
     tp->stop_hour = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 4, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 4, &low);
     tp->week_day = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 5, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 5, &low);
     tp->active = low;
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, &low);
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 6, &low);
     tp->free = low;
     for (uint8_t i=0; i < 8; i++)
       {
-      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 7+i, &low);
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 7+i, &low);
       tp->name[i] = low;
       }
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 16, &low);
+    tp->condition = low;
+    
+    for (uint8_t i = 0; i < 4; i++) 
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 17 + i, &low);
+      fl[i] = low;
+      }
+    
+    tp->threshold = IntToFloat(fl);
     ret = 1;
   }
   return ret;
@@ -951,14 +1095,18 @@ uint8_t load_timeplan(uint8_t id, timeplan_t *tp)
 /// ulozi casovy plan
 void save_timeplan(uint8_t id, timeplan_t *tp)
 {
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id), tp->start_min);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 1, tp->start_hour);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 2, tp->stop_min);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 3, tp->stop_hour);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 4, tp->week_day);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 5, tp->active);
-  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 6, tp->free);
-  for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (15 * id) + 7+i, tp->name[i]); 
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id), tp->start_min);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 1, tp->start_hour);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 2, tp->stop_min);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 3, tp->stop_hour);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 4, tp->week_day);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 5, tp->active);
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 6, tp->free);
+  for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 7+i, tp->name[i]); 
+  i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 16, tp->condition);
+  uint8_t fl[4];
+  FloatToInt(tp->threshold, &fl);
+  for (uint8_t i=0; i < 4; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_time_plan + (21 * id) + 17+i, fl[i]);
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// vymaze casovy plan
@@ -971,6 +1119,8 @@ void clear_timeplan(uint8_t id)
       {
       tp.free = 0;
       tp.active = 0;
+      tp.condition = 0;
+      tp.threshold = 0.0;
       sprintf(tp.name, "free %d", i);
       save_timeplan(i, &tp);
       }
@@ -981,6 +1131,8 @@ void clear_timeplan(uint8_t id)
       {
       tp.free = 0;
       tp.active = 0;
+      tp.condition = 0;
+      tp.threshold = 0;
       sprintf(tp.name, "free %d", id);
       save_timeplan(id, &tp);
       }
@@ -1035,10 +1187,11 @@ uint8_t load_programplan(uint8_t id, programplan_t *pp)
     pp->active = low;
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 1, &low);
     pp->free = low;
-    for (uint8_t i=0; i < 10; i++)
+    for (uint8_t i = 0; i < 10; i++)
       {
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 2 + i, &low);
       pp->timeplan[i] = low;
+      //printf("nacitam: %d", low);
       }
     for (uint8_t i=0; i < 8; i++)
       {
@@ -1057,8 +1210,8 @@ uint8_t save_programplan(uint8_t id, programplan_t *pp)
     {
     i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id), pp->active);
     i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 1, pp->free);
-    for (uint8_t i=0; i < 10; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 2 +i, pp->timeplan[i]);
-    for (uint8_t i=0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 12 +i, pp->name[i]);
+    for (uint8_t i = 0; i < 10; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 2 +i, pp->timeplan[i]);
+    for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (20 * id) + 12 +i, pp->name[i]);
     ret = 1;
     }
   return ret;
@@ -1265,8 +1418,8 @@ void setup(void)
   GLCD_GotoXY(0, 16);
   GLCD_PrintString("booting ...");
 
-  clear_programplan(255);
-  clear_timeplan(255);
+  //clear_programplan(255);
+  //clear_timeplan(255);
 }
 
 
@@ -1790,13 +1943,13 @@ void printJsonObject(cJSON *item)
 void send_timeplan(void)
 {
   timeplan_t tp;
-  cJSON *timepl = cJSON_CreateObject();
   for (uint8_t id = 0; id < max_timeplan; id++)
     {
     load_timeplan(id, &tp);
     if (tp.free == 1)
       {
-      sprintf(tmp1, "/regulatory/%s/timeplan/%d", device.nazev, id);
+      cJSON *timepl = cJSON_CreateObject();
+      strcpy(tmp1, "/regulatory/timeplan/");
       cJSON *c_start_min = cJSON_CreateNumber(tp.start_min);
       cJSON *c_start_hour = cJSON_CreateNumber(tp.start_hour);
       cJSON *c_stop_min = cJSON_CreateNumber(tp.stop_min);
@@ -1804,13 +1957,20 @@ void send_timeplan(void)
       cJSON *c_name = cJSON_CreateString(tp.name);
       cJSON *c_active = cJSON_CreateNumber(tp.active);
       cJSON *c_free = cJSON_CreateNumber(tp.free);
+      cJSON *c_cond = cJSON_CreateNumber(tp.condition);
+      cJSON *c_thresh = cJSON_CreateNumber(tp.threshold);
       cJSON *c_id = cJSON_CreateNumber(id);
-      cJSON_AddItemToObject(timepl, "start_min", c_id);
+      cJSON *term_name = cJSON_CreateString(device.nazev);
+      cJSON *c_week = cJSON_CreateNumber(tp.week_day);
+      cJSON_AddItemToObject(timepl, "term_name", term_name);
       cJSON_AddItemToObject(timepl, "start_min", c_start_min);
       cJSON_AddItemToObject(timepl, "start_hour", c_start_hour);
       cJSON_AddItemToObject(timepl, "stop_min", c_stop_min);
       cJSON_AddItemToObject(timepl, "stop_hour", c_stop_hour);
+      cJSON_AddItemToObject(timepl, "week_day", c_week);
       cJSON_AddItemToObject(timepl, "name", c_name);
+      cJSON_AddItemToObject(timepl, "condition", c_cond);
+      cJSON_AddItemToObject(timepl, "treshold", c_thresh);
       cJSON_AddItemToObject(timepl, "active", c_active);
       cJSON_AddItemToObject(timepl, "free", c_free);
       cJSON_AddItemToObject(timepl, "id", c_id);
@@ -1828,21 +1988,26 @@ void send_timeplan(void)
     }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//saric
 void send_programplan(void)
 {
   programplan_t pp;
-  cJSON *prgpl = cJSON_CreateObject();
+  int array[10];
   for (uint8_t id = 0; id < max_programplan; id++)
     {
-    load_programplan(id, &pp);
-    if (pp.free == 1)
+    if (check_programplan(id) == 1)
       {
-      sprintf(tmp1, "/regulatory/%s/programplan/%d", device.nazev, id);
+      cJSON *prgpl = cJSON_CreateObject();
+      load_programplan(id, &pp);
+      strcpy(tmp1, "/regulatory/programplan/");
       cJSON *c_active = cJSON_CreateNumber(pp.active);
       cJSON *c_free = cJSON_CreateNumber(pp.free);
       cJSON *c_id = cJSON_CreateNumber(id);
       cJSON *c_name = cJSON_CreateString(pp.name);
-      cJSON *en = cJSON_CreateIntArray(pp.timeplan, 10);
+      for (uint8_t ii=0; ii<10; ii++) array[ii] = pp.timeplan[ii];
+      cJSON *en = cJSON_CreateIntArray(array, 10);
+      cJSON *term_name = cJSON_CreateString(device.nazev);
+      cJSON_AddItemToObject(prgpl, "term_name", term_name);
       cJSON_AddItemToObject(prgpl, "name", c_name);
       cJSON_AddItemToObject(prgpl, "active", c_active);
       cJSON_AddItemToObject(prgpl, "free", c_free);

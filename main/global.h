@@ -24,6 +24,8 @@ typedef struct
   uint8_t active;
   uint8_t free;
   char name[8];
+  float threshold;
+  uint8_t condition;
 } timeplan_t;
 
 typedef struct

@@ -18,8 +18,9 @@
 #define eeprom_start_time_plan 3300
 
 #define max_programplan 20
-#define eeprom_start_program_plan 3300+(max_timeplan*15)
+#define eeprom_start_program_plan 3300+(max_timeplan*21)
 
+typedef unsigned char byte;
 
 esp_err_t twi_init(i2c_port_t t_i2c_num);
 
@@ -33,6 +34,7 @@ void show_uptime(char *text);
 
 void new_termostat_program(void);
 void new_timeplan(void);
+
 
 uint8_t check_timeplan(uint8_t id);
 uint8_t check_programplan(uint8_t id);
