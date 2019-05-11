@@ -40,7 +40,7 @@
 #define RS_CTS  (UART_PIN_NO_CHANGE)
 #define RS_TASK_STACK_SIZE    (8196)
 #define RS_TASK_PRIO          (5)
-#define PACKET_READ_TICS        (10 / portTICK_RATE_MS)
+#define PACKET_READ_TICS        (15 / portTICK_RATE_MS)
 #define RS_BUF_SIZE        (256)   //// definice maleho lokalniho rs bufferu
 
 
@@ -161,6 +161,7 @@ typedef struct
 } DateTime;
 
 
+uint8_t send_rsid = 0;
 uint8_t find_rsid = 0;
 uint8_t enable_send_network_status = 0;
 
@@ -226,6 +227,7 @@ void rs_send_at(uint8_t id, char *cmd, char *args)
   strcat(tmp1, ";");
   
   uart_write_bytes(UART_NUM_2, tmp1, strlen(tmp1));
+  //uart_wait_tx_done(UART_NUM_2, 100);
 }
 //////////////////////////////////////////////////////////////////////////////////////////
 esp_err_t RTC_RAM_write(uint8_t addr, uint8_t data)
@@ -569,7 +571,7 @@ esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
     return ESP_OK;
 }
 
-
+/////////////////////////////////////////////////////////////////////
 void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data_len)
 {
   uint8_t len, let;
@@ -2578,17 +2580,99 @@ void show_screen(void)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/// funkce, ktera postupne kontaktuje rs zarizeni a ceka odpoved. Kazdou 1 sec
+void rs_send_buffer(void)
+{
+  int32_t time_since_boot = esp_timer_get_time(); 
+  uint8_t cnt = send_at[send_rsid].cnt;
+  uint8_t send_idx = send_at[send_rsid].send_idx;
+  //printf("rsid: %d, total cnt: %d\n\r", send_rsid, cnt);
+  while (cnt > 0)
+    {
+    rs_send_at(send_rsid, send_at[send_rsid].data[send_idx].cmd, send_at[send_rsid].data[send_idx].args);
+    //printf("time: %d, cnt:%d,  %d, %s, %s\n\r",time_since_boot ,cnt, send_rsid, send_at[send_rsid].data[send_idx].cmd, send_at[send_rsid].data[send_idx].args);
+    send_idx++;
+    if (send_idx > 15) send_idx = 0;
+
+    send_at[send_rsid].send_idx = send_idx;
+    cnt--;
+    send_at[send_rsid].cnt = cnt;
+    }
+
+  send_rsid++;
+  if (send_rsid > 32)
+    send_rsid = 0;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////
+uint8_t rs_add_buffer(uint8_t rsid, char *cmd, char *args)
+{
+  uint8_t idx = send_at[rsid].idx;
+  uint8_t cnt = send_at[rsid].cnt;
+  uint8_t ret = 0;
+  if (cnt < 16)
+    {
+    strcpy(send_at[rsid].data[idx].cmd, cmd);
+    strcpy(send_at[rsid].data[idx].args, args);
+    send_at[rsid].cnt++;
+    idx++;
+    if (idx > 15) idx = 0;
+    send_at[rsid].idx = idx;
+    ret = 1;
+    }
+  return ret;
+}
+
+
+/// funkce, ktera postupne kontaktuje rs zarizeni a ceka odpoved.
 void sync_rs_device(void)
 {
-  rs_send_at(find_rsid, "sync", "NULL");
+  rs_add_buffer(find_rsid, "sync", "NULL");
   if (rs_device[find_rsid].online == 2) rs_device[find_rsid].online = 0;
   if (rs_device[find_rsid].online == 1) rs_device[find_rsid].online = 2;
   find_rsid++;
-  if (find_rsid >= 32)
-    find_rsid = 0;
+  if (find_rsid > 32) find_rsid = 0;  
 }
+///////////////////////////////////////////////////
+void sync_thermostat(void)
+{
+  uint32_t programs_available = 0;
+  char tmp4[12];
+  programplan_t pp;
+  for (uint8_t id = 0; id < max_programplan; id++ )
+    {
+    if (check_programplan(id) == 1)
+      { 
+      programs_available = programs_available | (1 << id);
+      }
+    }
+  sprintf(tmp4, "%d", programs_available);
 
+  for (uint8_t rsid = 0; rsid < 32; rsid++)
+    {
+    if (rs_device[rsid].type == ROOM_CONTROL)
+      {
+       rs_add_buffer(rsid, "spc", tmp4);
+      } 
+    }
+}
+////////////////////////////////////////////////////////////////
+//kdyz je rs zarizeni offline, tak vsechno nastav jako offline
+//online status
+// .. 0 rs zarizeni vraci chybu
+// .. 1 rs vsechno je ok
+// .. 2 nastaveno z duvodu necinnosti 
+void sync_status(void)
+{
+  for (uint8_t rsid = 0; rsid < 32; rsid++)
+    {
+    if (rs_device[rsid].type == ROOM_CONTROL)
+      {
+      if (rs_device[rsid].online == 0)
+        for (uint8_t idx = 0; idx < remote_tds[rsid].cnt; idx++)
+		remote_tds[rsid].id[idx].online = 2;
+      }
+    }
+}
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 void callback_1_sec(void* arg)
 {
@@ -2613,9 +2697,10 @@ void callback_1_sec(void* arg)
   //printf("aktual cas: %s\n\r", str);
   //printf("----\n\r");
 
+  sync_status();
   sync_rs_device();
+ 
 
-  
   if (enable_send_network_status == 1)
     {
      //// odesli skutecne nastaveni, pozor rozdil mezi static a dhcp
@@ -2641,6 +2726,8 @@ void callback_30_sec(void* arg)
   Global_HWwirenum = 0;
   for (uint8_t i = 0; i < 2; i++ )
      one_hw_search_device(i);
+
+  sync_thermostat();
 
   /// odesilam informace
   if (mqtt_connected == 1)
@@ -2763,6 +2850,11 @@ void add_at_input_command_buffer(char *data, uint8_t len)
     remote_room_thermostat[rsid].term_threshold[atoi(str1)] = atof(str2);
     }
 
+  if (strcmp(cmd, "upd") == 0)
+    {
+    rs_device[rsid].uptime = atoi(args);
+    }
+
   /// zprava typu ident = identifikace zarizeni
   if (strcmp(cmd, "ident") == 0)
     {
@@ -2789,6 +2881,7 @@ void rs_receive_task(void* args)
   uint8_t start_at = 0;
   uint8_t c;
   int len = 0;
+  uint8_t xty = 0;
   while(1)
     {
     len = uart_read_bytes(UART_NUM_2, data, RS_BUF_SIZE, PACKET_READ_TICS);
@@ -2826,7 +2919,12 @@ void rs_receive_task(void* args)
         endloop:;	
 	}	
       }
-    //rs_busy = 0; 
+    if (xty > 32)
+      {
+      rs_send_buffer();
+      xty = 0;
+      }
+    xty++;
     }
   free(data);
 }
