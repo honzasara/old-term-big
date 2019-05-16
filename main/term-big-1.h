@@ -14,11 +14,14 @@
 #define eeprom_start_stored_device 100
 #define eeprom_start_my_device 10
 #define eeprom_start_wifi_setup 3200
+
 #define max_timeplan 20
-#define eeprom_start_time_plan 3300
+#define eeprom_start_timeplan 3300
+#define eeprom_size_timeplan 21
 
 #define max_programplan 20
-#define eeprom_start_program_plan 3300+(max_timeplan*21)
+#define eeprom_start_program_plan 3300+(max_timeplan*eeprom_size_timeplan)
+#define eeprom_size_program_plan 21
 
 typedef unsigned char byte;
 

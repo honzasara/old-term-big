@@ -20,6 +20,7 @@ typedef struct at_data
   char args[32];
 } at_data_t;
 
+
 struct struct_send_at
 {
   uint8_t cnt;
@@ -27,6 +28,7 @@ struct struct_send_at
   uint8_t send_idx;
   at_data_t data[16];
 } send_at[32];
+
 
 typedef struct
 {
@@ -42,12 +44,14 @@ typedef struct
   uint8_t condition;
 } timeplan_t;
 
+
 typedef struct
 {
   char name[8];
   uint8_t timeplan[10];
   uint8_t active;
   uint8_t free;
+  uint8_t actions;
 } programplan_t;
 
 
@@ -59,8 +63,9 @@ typedef struct
   uint32_t uptime;
   uint8_t ready;
   uint8_t online;
-  char name[10];
+  char device_name[10];
 } rs_device_t;
+
 
 typedef struct
 {
@@ -71,18 +76,21 @@ typedef struct
   uint8_t output;
 } actions_t;
 
+
 struct struct_remote_room_thermostat
 {
   int light;
   uint8_t term_mode;
-  uint8_t active_program;
+  uint8_t active_program[3];
   float term_threshold[3];
   char term_name[3][10];
   uint8_t ready;
   uint8_t conditions_action;
 } remote_room_thermostat[32];
 
+
 extern i2c_port_t i2c_num;
+
 
 struct struct_my_device
 {
