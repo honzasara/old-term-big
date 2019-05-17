@@ -23,6 +23,10 @@
 #define eeprom_start_program_plan 3300+(max_timeplan*eeprom_size_timeplan)
 #define eeprom_size_program_plan 21
 
+#define max_output 20
+#define eeprom_output_start 5000
+#define eeprom_size_output 180 
+
 typedef unsigned char byte;
 
 esp_err_t twi_init(i2c_port_t t_i2c_num);

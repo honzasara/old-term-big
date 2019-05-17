@@ -180,6 +180,8 @@ void function_ds18s20_set_name(uint8_t slot, const char* name);
 uint8_t rs_add_buffer(uint8_t rsid, char *cmd, char *args);
 esp_err_t i2c_eeprom_readByte(uint8_t deviceAddress, uint16_t address, uint8_t *data);
 esp_err_t i2c_eeprom_writeByte(uint8_t deviceAddress, uint16_t address, uint8_t data);
+uint8_t save_output(uint8_t id, output_t *ot);
+uint8_t load_output(uint8_t id, output_t *ot);
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void new_parse_at(char *input, char *out1, char *out2)
@@ -586,6 +588,8 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
   uint8_t len, let;
   programplan_t pp;
   timeplan_t tp;
+  output_t ot;
+  uint8_t change = 0;
   char parse_topic[MAX_TEMP_BUFFER];
   char parse_data[MAX_TEMP_BUFFER];
   uint8_t valid_json = 1; 
@@ -804,9 +808,10 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       condition = cJSON_GetObjectItemCaseSensitive(json, "condition");
       cJSON *threshold = NULL;
       threshold = cJSON_GetObjectItemCaseSensitive(json, "threshold");
-      uint8_t change = 0;
+      change = 0;
       if (cJSON_IsNumber(slot_id))
         {
+	load_timeplan(slot_id->valueint, &tp);
         if (cJSON_IsString(name) && strlen(name->valuestring) < 8) {strcpy(tp.name, name->valuestring); change = 1;}
 	if (cJSON_IsNumber(active)) {tp.active = active->valueint; change = 1;}
 	if (cJSON_IsNumber(free)) {tp.free = free->valueint; change = 1;}
@@ -840,9 +845,10 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       cJSON *act = NULL;
       act = cJSON_GetObjectItemCaseSensitive(json, "action");
       cJSON *arr = NULL;
-      uint8_t change = 0;
+      change = 0;
       if (cJSON_IsNumber(slot_id))
         {
+	load_programplan(slot_id->valueint, &pp);
         if (cJSON_IsString(name) && strlen(name->valuestring) < 8) {strcpy(pp.name, name->valuestring); change = 1;}
         if (cJSON_IsNumber(active)) {pp.active = active->valueint; change = 1;}
 	if (cJSON_IsNumber(act)) {pp.actions = act->valueint; change = 1;};
@@ -993,10 +999,52 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
      tmp1[j + 1] = 0;
      j++;
     }
-    ///
-    if (strcmp(tmp1, "anything") == 0)
+    /// saric
+    if (strcmp(tmp1, "output/set") == 0)
       {
+      cJSON *c_hw_port = NULL;
+      cJSON *c_id = NULL;
+      cJSON *c_type = NULL;
+      cJSON *c_active = NULL;
+      cJSON *c_name = NULL;
+      cJSON *c_mqtt_topic = NULL;
+      cJSON *c_mqtt_payload = NULL;
+      cJSON *c_rs = NULL;
+      cJSON *c_rsid = NULL;
+      cJSON *c_rscmd = NULL;
+      cJSON *c_rsargs = NULL;
+      change = 0;
+      c_hw_port = cJSON_GetObjectItemCaseSensitive(json, "hw");
+      c_type = cJSON_GetObjectItemCaseSensitive(json, "type");
+      c_id = cJSON_GetObjectItemCaseSensitive(json, "id");
+      c_name = cJSON_GetObjectItemCaseSensitive(json, "name");
+      c_active = cJSON_GetObjectItemCaseSensitive(json, "active");
+      c_mqtt_topic = cJSON_GetObjectItemCaseSensitive(json, "mqtt_topic");
+      c_mqtt_payload = cJSON_GetObjectItemCaseSensitive(json, "mqtt_payload");
+      c_rs = cJSON_GetObjectItemCaseSensitive(json, "rs");
+      c_rsid = cJSON_GetObjectItemCaseSensitive(c_rs, "rsid");
+      c_rscmd = cJSON_GetObjectItemCaseSensitive(c_rs, "cmd");
+      c_rsargs = cJSON_GetObjectItemCaseSensitive(c_rs, "args");
+      if  (cJSON_IsNumber(c_id))
+        {
+	load_output(c_id->valueint, &ot);
+	if (cJSON_IsNumber(c_hw_port)){ot.hw = c_hw_port->valueint; change = 1;};
+	if (cJSON_IsNumber(c_type)){ot.type = c_type->valueint; change = 1;};
+	if (cJSON_IsString(c_name)){strcpy(ot.name, c_name->valuestring); change = 1;};
+	if (cJSON_IsNumber(c_active)){ot.active = c_active->valueint; change = 1;};
+	if (cJSON_IsString(c_mqtt_topic)){strcpy(ot.mqtt_topic, c_mqtt_topic->valuestring); change = 1;};
+	if (cJSON_IsString(c_mqtt_payload)){strcpy(ot.mqtt_payload, c_mqtt_payload->valuestring); change = 1;};
+	if (cJSON_IsString(c_rscmd)){strcpy(ot.rs.cmd, c_rscmd->valuestring);  change = 1;};
+	if (cJSON_IsString(c_rsargs)){strcpy(ot.rs.args, c_rsargs->valuestring); change = 1;};
+	if (cJSON_IsNumber(c_rsid)){ot.rs.rsid = c_rsid->valueint; change = 1;};
+        }
+      if (change == 1)
+        {
+	save_output(c_id->valueint, &ot);
+	}
       }
+
+
     ///
     if ((strcmp(tmp1, "at") == 0) && (valid_json == 1))
       {
@@ -1142,6 +1190,117 @@ void FloatToInt(float x, uint8_t *number)
   for (int i = 0; i < 4; i++) number[i] = data.b[i];
 }
 ///////////////////////////////////////////////////////////////////////////////////////////
+/// nacte nastaveny vystupu
+uint8_t load_output(uint8_t id, output_t *ot)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  
+  if (id < max_output)
+    {
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 0, &low);
+    ot->hw = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 1, &low);
+    ot->type = low;
+    for (uint8_t i=0; i < 64; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 2 + i, &low);
+      ot->mqtt_topic[i] = low;
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 66 + i, &low);
+      ot->mqtt_payload[i] = low;
+      }
+    for (uint8_t i=0; i < 8; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 130 + i, &low);
+      ot->rs.cmd[i] = low;
+      }
+    for (uint8_t i=0; i < 32; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 138 + i, &low);
+      ot->rs.args[i] = low;
+      }
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 170 , &low);
+    ot->rs.rsid = low;
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 171 , &low);
+    ot->active = low;
+    for (uint8_t i=0; i < 8; i++)
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 172 + i , &low);
+      ot->name[i] = low;
+      }
+    ret = 1;
+    }
+  return ret;
+}
+///////////////////////////////////////////////////////////////////////////
+/// ulozi nastaveni vystupu
+uint8_t save_output(uint8_t id, output_t *ot)
+{
+  uint8_t ret = 0;
+  if (id < max_output)
+    {
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 0, ot->hw);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 1, ot->type);
+    for (uint8_t i = 0; i < 64; i++)
+      {
+      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 2 + i, ot->mqtt_topic[i]);
+      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 66 + i, ot->mqtt_payload[i]);
+      }
+    for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 130 + i, ot->rs.cmd[i]);
+    for (uint8_t i = 0; i < 32; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 138 + i, ot->rs.args[i]);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 170, ot->rs.rsid);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 171, ot->active);
+    for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 172 + i, ot->name[i]);
+    ret = 1;
+    }
+
+  return ret;
+}
+
+uint8_t check_output(uint8_t id)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 171 , &low);
+  if (low == 1) ret = 1;
+  return ret;
+}
+
+void clear_output(uint8_t id)
+{
+  output_t ot;
+  if (id == 255)
+    {
+    for (uint8_t io = 0; io < max_output; io++)
+      {
+      ot.hw = 255;
+      ot.type = 255;
+      ot.active = 0;
+      sprintf(ot.name, "free %d", io);
+      strcpy(ot.mqtt_topic, " ");
+      strcpy(ot.mqtt_payload, " ");
+      ot.rs.rsid = 0;
+      strcpy(ot.rs.cmd, " ");
+      strcpy(ot.rs.args, " ");
+      save_output(io, &ot);
+      }
+    }
+  else
+    {
+    ot.hw = 255;
+    ot.type = 255;
+    ot.active = 0;
+    sprintf(ot.name, "free %d", id);
+    strcpy(ot.mqtt_topic, "");
+    strcpy(ot.mqtt_payload, "");
+    ot.rs.rsid = 0;
+    strcpy(ot.rs.cmd, "");
+    strcpy(ot.rs.args, "");
+    save_output(id, &ot);
+    }
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// potrebuji zjistit obsazeni timeplanu, je zbytecne vsechno nacitat
 uint8_t check_timeplan(uint8_t id)
 {
@@ -1523,8 +1682,9 @@ void setup(void)
   GLCD_PrintString("booting ...");
   GLCD_Render();
 
-  clear_timeplan(255);
-  clear_programplan(255);
+  //clear_timeplan(255);
+  //clear_programplan(255);
+  //clear_output(255);
 }
 
 
@@ -2136,6 +2296,59 @@ void send_programplan(void)
       cJSON_Delete(prgpl);
       cJSON_free(string);
       }
+    }
+}
+
+
+void send_set_output(void)
+{
+  output_t ot;
+  for (uint8_t oi = 0; oi < max_output; oi++)
+    {
+    if (check_output(oi) == 1)
+      {
+      cJSON *outj = cJSON_CreateObject();
+      load_output(oi, &ot);
+      strcpy(tmp1, "/regulatory/output/");
+      cJSON *c_active = cJSON_CreateNumber(ot.active);
+      cJSON *c_hw = cJSON_CreateNumber(ot.hw);
+      cJSON *c_type = cJSON_CreateNumber(ot.type);
+      cJSON *c_id = cJSON_CreateNumber(oi);
+      cJSON *c_state = cJSON_CreateNumber(output_state[oi]);
+      cJSON *c_name = cJSON_CreateString(ot.name);
+      cJSON *c_term_name = cJSON_CreateString(device.nazev);
+      cJSON *c_mqtt_topic = cJSON_CreateString(ot.mqtt_topic);
+      cJSON *c_mqtt_payload = cJSON_CreateString(ot.mqtt_payload);
+      
+      cJSON *c_rs_cmd = cJSON_CreateString(ot.rs.cmd);
+      cJSON *c_rs_args = cJSON_CreateString(ot.rs.args);
+      cJSON *c_rs_rsid = cJSON_CreateNumber(ot.rs.rsid);
+      cJSON *rsobj = cJSON_CreateObject();
+      cJSON_AddItemToObject(rsobj, "rsid", c_rs_rsid);
+      cJSON_AddItemToObject(rsobj, "cmd", c_rs_cmd);
+      cJSON_AddItemToObject(rsobj, "args", c_rs_args);
+
+      cJSON_AddItemToObject(outj, "state", c_state);
+      cJSON_AddItemToObject(outj, "term_name", c_term_name);
+      cJSON_AddItemToObject(outj, "id", c_id);
+      cJSON_AddItemToObject(outj, "type", c_type);
+      cJSON_AddItemToObject(outj, "active", c_active);
+      cJSON_AddItemToObject(outj, "hw", c_hw);
+      cJSON_AddItemToObject(outj, "name", c_name);
+      cJSON_AddItemToObject(outj, "mqtt_topic", c_mqtt_topic);
+      cJSON_AddItemToObject(outj, "mqtt_payload", c_mqtt_payload);
+      cJSON_AddItemToObject(outj, "rs", rsobj);
+
+      char * string = cJSON_Print(outj);
+      for (uint16_t i = 0; i < strlen(string); i++)
+        {
+        tmp2[i] = string[i];
+        tmp2[i+1] = 0;
+        }
+      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
+      cJSON_Delete(outj);
+      cJSON_free(string);
+      }    
     }
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2858,6 +3071,7 @@ void callback_30_sec(void* arg)
     send_thermostat_status();
     send_programplan();
     send_timeplan();
+    send_set_output();
     }
   else
     {

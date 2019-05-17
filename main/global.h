@@ -1,4 +1,5 @@
 #include "driver/i2c.h"
+#include "term-big-1.h"
 
 #ifndef GLOBALH_INCLUDED
 #define GLOBALH_INCLUDED
@@ -14,12 +15,28 @@
 #define ACK_VAL I2C_MASTER_ACK                             /*!< I2C ack value */
 #define NACK_VAL I2C_MASTER_NACK                             /*!< I2C nack value */
 
+#define max_output 20
+
 typedef struct at_data
 {
   char cmd[8];
   char args[32];
+  uint8_t rsid;
 } at_data_t;
 
+
+typedef struct
+{
+  uint8_t hw;
+  uint8_t type;
+  uint8_t active;
+  char mqtt_topic[64];
+  char mqtt_payload[64];
+  at_data_t rs;
+  char name[8];
+} output_t;
+
+uint8_t output_state[max_output];
 
 struct struct_send_at
 {
@@ -70,7 +87,6 @@ typedef struct
 typedef struct
 {
   char name[8];
-  uint8_t type;
   uint8_t current_state;
   uint8_t last_state;
   uint8_t output;
