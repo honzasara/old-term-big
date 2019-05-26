@@ -3,7 +3,7 @@
 #include "saric_ds2482.h"
 #include <inttypes.h>
 #include "driver/i2c.h"
-#include "global.h"
+#include "term-big-1.h"
 
 
 

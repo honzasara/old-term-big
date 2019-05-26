@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -7,7 +6,6 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "esp_event_loop.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -15,22 +13,15 @@
 #include "freertos/event_groups.h"
 #include <soc/rtc.h>
 #include "freertos/timers.h"
-
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "esp_log.h"
-#include "mqtt_client.h"
-
 #include "lwip/err.h"
 #include "lwip/apps/sntp.h"
-
 #include <sys/param.h>
-
 #include <esp_http_server.h>
-
 #include "cJSON.h"
-
 #include "term-big-1.h"
 
 
@@ -44,9 +35,6 @@
 #define RS_BUF_SIZE        (256)   //// definice maleho lokalniho rs bufferu
 
 
-#define MAX_TEMP_BUFFER 512
-#define HW_ONEWIRE_MAXROMS 64
-#define HW_ONEWIRE_MAXDEVICES 32
 
 #define I2C_MEMORY_ADDR 0x50
 #define DS1307_ADDRESS  0x68
@@ -56,20 +44,16 @@
 #include "Font5x8.h"
 #include "driver/uart.h"
 #include "driver/i2c.h"
-#include "global.h"
 #include "ow.h"
-#include "term-big-1.h"
 
-char tmp3[MAX_TEMP_BUFFER];
-char tmp1[MAX_TEMP_BUFFER];
-char tmp2[MAX_TEMP_BUFFER];
+#include "send_mqtt.h"
+
 
 
 i2c_port_t i2c_num;
 
 EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
-esp_mqtt_client_handle_t mqtt_client;
 TaskHandle_t loopTaskHandle = NULL;
 
 uint8_t wifi_connected = 0;
@@ -78,90 +62,10 @@ uint8_t mqtt_connected = 0;
 uint8_t reload_network = 1;
  
 
-
-struct struct_DDS18s20
-{
-  uint8_t volno;
-  uint8_t rom[8];
-  uint8_t assigned_ds2482;
-  uint8_t tempL;
-  uint8_t tempH;
-  uint8_t CR;
-  uint8_t CP;
-  uint8_t CRC;
-  float temp;
-  int offset;
-  char nazev[8];
-  uint8_t online;
-} tds18s20[HW_ONEWIRE_MAXROMS];
-
-
-struct struct_1w_rom
-{
-  uint8_t rom[8];
-  uint8_t assigned_ds2482;
-} w_rom[HW_ONEWIRE_MAXROMS];
-
-
-uint8_t tmp_rom[8];
-
-
-struct struct_ds2482
-{
-  uint8_t i2c_addr;
-  uint8_t HWwirenum;
-  uint8_t hwwire_cekam;
-} ds2482_address[2];
-
-
-typedef struct
-{
-  uint8_t rom[8];
-  char name[8];
-} struct_mac;
-
-
-struct struct_remote_wire
-{
-  struct_mac id[10];
-  uint32_t stamp;
-  uint8_t ready;
-  uint8_t cnt;
-} remote_wire[32];
-
-
-typedef struct
-{
-  float temp;
-  int offset;
-  uint8_t online;
-} struct_tds;
-
-
-struct struct_remote_tds
-{
-  struct_tds id[10];
-  uint32_t stamp;
-  uint8_t ready;
-  uint8_t cnt;
-} remote_tds[32];
-
+esp_mqtt_client_handle_t mqtt_client = NULL;
 
 uint8_t Global_HWwirenum = 0;
 uint8_t Global_ds18s20num = 0;
-
-
-typedef struct 
-{
-  uint8_t second;
-  uint8_t minute;
-  uint8_t hour;
-  uint8_t day_week;
-  uint8_t day;
-  uint8_t month;
-  uint16_t year;
-} DateTime;
-
 
 uint8_t send_rsid = 0;
 uint8_t find_rsid = 0;
@@ -180,16 +84,12 @@ void function_ds18s20_set_name(uint8_t slot, const char* name);
 uint8_t rs_add_buffer(uint8_t rsid, char *cmd, char *args);
 esp_err_t i2c_eeprom_readByte(uint8_t deviceAddress, uint16_t address, uint8_t *data);
 esp_err_t i2c_eeprom_writeByte(uint8_t deviceAddress, uint16_t address, uint8_t data);
-uint8_t save_output(uint8_t id, output_t *ot);
-uint8_t load_output(uint8_t id, output_t *ot);
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+/////////////////////////////
 void new_parse_at(char *input, char *out1, char *out2)
 {
-
-  uint8_t count = 0;
-  uint8_t q = 0;
-
+  uint16_t count = 0;
+  uint16_t q = 0;
   while ( (count < strlen(input)) && (input[count] != ',') && (q < MAX_TEMP_BUFFER - 1))
   {
     out1[q] = input[count];
@@ -197,7 +97,6 @@ void new_parse_at(char *input, char *out1, char *out2)
     q++;
     count++;
   }
-
   count++;
   q = 0;
   while ((count < strlen(input)) && (q < MAX_TEMP_BUFFER - 1) )
@@ -211,29 +110,28 @@ void new_parse_at(char *input, char *out1, char *out2)
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////
+/// funkce odesialni
 void rs_send_at(uint8_t id, char *cmd, char *args)
 {
   char tmp1[MAX_TEMP_BUFFER];
   char tmp2[8];
-
   tmp1[0] = 0;
   tmp2[0] = 0;
-
   strcpy(tmp1, "at+");
   itoa(id, tmp2, 10);
   strcat(tmp1, tmp2);
   strcat(tmp1, ",");
   strcat(tmp1, cmd);
   if (strlen(args) > 0)
-  {
+    {
     strcat(tmp1, ",");
     strcat(tmp1, args);
-  }
+    }
   strcat(tmp1, ";");
-  
   uart_write_bytes(UART_NUM_2, tmp1, strlen(tmp1));
 }
-
+//////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////
 /// ulozeni dat do RTC pameti
 esp_err_t RTC_RAM_write(uint8_t addr, uint8_t data)
@@ -373,7 +271,6 @@ uint8_t sync_ntp_time_with_local_rtc(void)
   sntp_setoperatingmode(SNTP_OPMODE_POLL);
   sntp_setservername(0, "82.113.53.41");
   sntp_setservername(1, "37.187.104.44");
-  uint8_t dst;
   sntp_init();
   time_t now = 0;
   DateTime dt;
@@ -404,7 +301,7 @@ uint8_t sync_ntp_time_with_local_rtc(void)
      dt.month = timeinfo.tm_mon + 1;
      dt.year = timeinfo.tm_year + 1900;
      RTC_DS1307_adjust(&dt);
-     printf("Save to RTC");
+     printf("Save to RTC\n\r");
      ret = 1; 
     }
   else
@@ -589,7 +486,9 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
   programplan_t pp;
   timeplan_t tp;
   output_t ot;
+  actions_t at;
   uint8_t change = 0;
+  char p_tmp1[64];
   char parse_topic[MAX_TEMP_BUFFER];
   char parse_data[MAX_TEMP_BUFFER];
   uint8_t valid_json = 1; 
@@ -609,12 +508,12 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
   ////////////////////////////////////////////////////////////////////
   ////////////////////////////////////////////////////////////////////
   //// funkce pro globalni setup
-  tmp1[0] = 0;
-  strcpy(tmp1, "/regulatory/global/");
-  len = strlen(tmp1);
+  p_tmp1[0] = 0;
+  strcpy(p_tmp1, "/regulatory/global/");
+  len = strlen(p_tmp1);
   let = topic_len;
   //printf("%s - %s , %d\n\r", parse_topic, tmp1, len);
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  if (strncmp(parse_topic, p_tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
     if (json == NULL)
@@ -625,33 +524,33 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     else
       valid_json = 1;
     ///
-    tmp1[0] = 0;
+    p_tmp1[0] = 0;
     j = 0;
     for (uint8_t p = len; p < let; p++)
       {
-      tmp1[j] = topic[p];
-      tmp1[j + 1] = 0;
+      p_tmp1[j] = topic[p];
+      p_tmp1[j + 1] = 0;
       j++;
       }
     /// automaticky sync z ntp serveru a syncnuti vsech rsid
-    if (strcmp(tmp1, "sync/time") == 0)
+    if (strcmp(p_tmp1, "sync/time") == 0)
       {
       if (sync_ntp_time_with_local_rtc() == 1)
 	/// pokud se nepodari syncnout cas, tak nesynchronizuji v rsid, ocekava se funkcni baterky v rtc
         sync_time_rs_device();
       }
     /// syncnu pouze cas do rsid
-    if (strcmp(tmp1, "sync/time/rs") == 0)
+    if (strcmp(p_tmp1, "sync/time/rs") == 0)
       {
       sync_time_rs_device();
       }
     /// syncnu si cas z ntp serveru
-    if (strcmp(tmp1, "sync/time/ntp") == 0)
+    if (strcmp(p_tmp1, "sync/time/ntp") == 0)
       {
       sync_ntp_time_with_local_rtc();
       }
     //// nastaveni casu
-    if ((strcmp(tmp1, "set/time") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "set/time") == 0) && (valid_json == 1))
       {
       cJSON *jhod = NULL;
       jhod = cJSON_GetObjectItemCaseSensitive(json, "hour");
@@ -683,11 +582,11 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     }
   //////
   /// funkce termostatu
-  tmp1[0] = 0;
-  sprintf(tmp1, "/regulatory/%s/thermostat/", device.nazev);
-  len = strlen(tmp1);
+  p_tmp1[0] = 0;
+  sprintf(p_tmp1, "/regulatory/%s/thermostat/", device.nazev);
+  len = strlen(p_tmp1);
   let = topic_len;
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  if (strncmp(parse_topic, p_tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
     if (json == NULL)
@@ -698,16 +597,16 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       {
       valid_json = 1;
       }
-    tmp1[0] = 0;
+    p_tmp1[0] = 0;
     j = 0;
     for (uint8_t p = len; p < let; p++)
       {
-      tmp1[j] = topic[p];
-      tmp1[j + 1] = 0;
+      p_tmp1[j] = topic[p];
+      p_tmp1[j + 1] = 0;
       j++;
       }
     //// nastaveni pro rsid thermostat
-    if ((strcmp(tmp1, "set") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "set") == 0) && (valid_json == 1))
       {
       cJSON *rrsid = NULL;
       rrsid = cJSON_GetObjectItemCaseSensitive(json, "rsid");
@@ -742,29 +641,34 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
 	  }
         }
       }
+
     /// nastaveni thermostat okruhu
-    if ((strcmp(tmp1, "ring/set") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "ring/set") == 0) && (valid_json == 1))
       {
       cJSON *id = NULL;
-      id = cJSON_GetObjectItemCaseSensitive(json, "id");
+      id = cJSON_GetObjectItemCaseSensitive(json, "ring");
       cJSON *rrsid = NULL;
       rrsid = cJSON_GetObjectItemCaseSensitive(json, "rsid");
       cJSON *name = NULL;
-      name = cJSON_GetObjectItemCaseSensitive(json, "therm_name");
+      name = cJSON_GetObjectItemCaseSensitive(json, "name");
       cJSON *threshold = NULL;
-      threshold = cJSON_GetObjectItemCaseSensitive(json, "therm_threshold");
+      threshold = cJSON_GetObjectItemCaseSensitive(json, "threshold");
+      cJSON *atds = NULL;
+      atds = cJSON_GetObjectItemCaseSensitive(json, "associate_tds");
       cJSON *prog = NULL;
       prog = cJSON_GetObjectItemCaseSensitive(json, "program");
+      cJSON *act = NULL;
+      act = cJSON_GetObjectItemCaseSensitive(json, "action");
       if (cJSON_IsNumber(id) && cJSON_IsNumber(rrsid))
         {
-	/// nastaveni thersholdu pro dany ring
+	/// nastaveni thersholdu pro dany ring; set ring threshold
         if (cJSON_IsNumber(threshold))
 	  {
 	  char tmp4[14];
 	  if (threshold->valuedouble >= 16 && threshold->valuedouble <= 32)
 	    {  
 	    sprintf(tmp4, "%d,%.1f", id->valueint, threshold->valuedouble);
-	    rs_add_buffer(rrsid->valueint, "stt", tmp4);
+	    rs_add_buffer(rrsid->valueint, "srt", tmp4);
 	    }
 	  }
 	/// nastaveni programu pro dany ring
@@ -774,17 +678,29 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
           sprintf(tmp4, "%d,%d", id->valueint, prog->valueint);
           rs_add_buffer(rrsid->valueint, "stp", tmp4);
           }
-	/// nastaveni nazvu pro dany ring
+	/// nastaveni nazvu pro dany ring set ring name
 	if (cJSON_IsString(name))
           {
 	  char tmp4[14];
           sprintf(tmp4, "%d,%s", id->valueint, name->valuestring);	  
-	  rs_add_buffer(rrsid->valueint, "stn", tmp4);
+	  rs_add_buffer(rrsid->valueint, "srn", tmp4);
 	  }
+	if (cJSON_IsNumber(atds))
+	  {
+	  char tmp4[14];
+	  sprintf(tmp4, "%d,%d", id->valueint, atds->valueint);
+	  rs_add_buffer(rrsid->valueint, "sta", tmp4);
+	  }
+	if (cJSON_IsNumber(act))
+          {
+          char tmp4[14];
+          sprintf(tmp4, "%d,%d", id->valueint, act->valueint);
+          rs_add_buffer(rrsid->valueint, "sac", tmp4);
+          }
         }
       }
     //// nastaveni casoveho planu
-    if ((strcmp(tmp1, "timeplan/set") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "timeplan/set") == 0) && (valid_json == 1))
       {
       cJSON *slot_id = NULL;
       slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
@@ -830,7 +746,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
         }
       }
     /// nastaveni programu
-    if ((strcmp(tmp1, "programplan/set") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "programplan/set") == 0) && (valid_json == 1))
       {
       cJSON *slot_id = NULL;
       slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
@@ -842,8 +758,6 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       free = cJSON_GetObjectItemCaseSensitive(json, "free");
       cJSON *tp = NULL;
       tp = cJSON_GetObjectItemCaseSensitive(json, "timeplans");
-      cJSON *act = NULL;
-      act = cJSON_GetObjectItemCaseSensitive(json, "action");
       cJSON *arr = NULL;
       change = 0;
       if (cJSON_IsNumber(slot_id))
@@ -851,7 +765,6 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
 	load_programplan(slot_id->valueint, &pp);
         if (cJSON_IsString(name) && strlen(name->valuestring) < 8) {strcpy(pp.name, name->valuestring); change = 1;}
         if (cJSON_IsNumber(active)) {pp.active = active->valueint; change = 1;}
-	if (cJSON_IsNumber(act)) {pp.actions = act->valueint; change = 1;};
 	if (cJSON_IsNumber(free)) {pp.free = free->valueint; change = 1;}
 	if (cJSON_IsArray(tp))
 	  {
@@ -872,13 +785,13 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     }
   ///
   /// funkce nastaveni lokalni ds18s20
-  tmp1[0] = 0;
-  strcpy(tmp1, "/regulatory/");
-  strcat(tmp1, device.nazev);
-  strcat(tmp1, "/ds18s20/");
-  len = strlen(tmp1);
+  p_tmp1[0] = 0;
+  strcpy(p_tmp1, "/regulatory/");
+  strcat(p_tmp1, device.nazev);
+  strcat(p_tmp1, "/ds18s20/");
+  len = strlen(p_tmp1);
   let = topic_len;
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  if (strncmp(parse_topic, p_tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
     if (json == NULL)
@@ -888,15 +801,15 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     else
       valid_json = 1;
 
-    tmp1[0] = 0;
+    p_tmp1[0] = 0;
     j = 0;
     for (uint8_t p = len; p < let; p++)
       {
-      tmp1[j] = topic[p];
-      tmp1[j + 1] = 0;
+      p_tmp1[j] = topic[p];
+      p_tmp1[j + 1] = 0;
       j++;
       }
-    if ((strcmp(tmp1, "set/offset") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "set/offset") == 0) && (valid_json == 1))
       {
       cJSON *slot_id = NULL;
       slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
@@ -905,7 +818,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       if (cJSON_IsNumber(slot_id) && cJSON_IsNumber(offset))
         function_ds18s20_set_offset(slot_id->valueint, offset->valuedouble);
       }
-    if ((strcmp(tmp1, "set/name") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "set/name") == 0) && (valid_json == 1))
       {
 	cJSON *slot_id = NULL;
 	slot_id = cJSON_GetObjectItemCaseSensitive(json, "id");
@@ -920,13 +833,13 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     }
   ///
   /// funkce pro lokalni 1wire sbernici
-  tmp1[0] = 0;
-  strcpy(tmp1, "/regulatory/");
-  strcat(tmp1, device.nazev);
-  strcat(tmp1, "/1wire/");
-  len = strlen(tmp1);
+  p_tmp1[0] = 0;
+  strcpy(p_tmp1, "/regulatory/");
+  strcat(p_tmp1, device.nazev);
+  strcat(p_tmp1, "/1wire/");
+  len = strlen(p_tmp1);
   let = topic_len;
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  if (strncmp(parse_topic, p_tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
     if (json == NULL)
@@ -936,23 +849,23 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       }
     else
       valid_json = 1;
-    tmp1[0] = 0;
+    p_tmp1[0] = 0;
     j = 0;
     for (uint8_t p = len; p < let; p++)
       {
-      tmp1[j] = topic[p];
-      tmp1[j + 1] = 0;
+      p_tmp1[j] = topic[p];
+      p_tmp1[j + 1] = 0;
       j++;
       }
     //// vymazu vsechny annoncovane cidla
-    if (strcmp(tmp1, "ds18s20/clear")) 
+    if (strcmp(p_tmp1, "ds18s20/clear")) 
       {
       for (uint8_t idx = 0; idx < HW_ONEWIRE_MAXROMS; idx++)
         function_ds18s20_unannounced_rom(idx);
       printf("Mazu vsechny announcovane cidla\n\r");
       }
      //// funkce pro nastaveni annonce cidla
-    if ((strcmp(tmp1, "ds18s20/announce") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "ds18s20/announce") == 0) && (valid_json == 1))
       {
       cJSON *id = NULL;
       id = cJSON_GetObjectItemCaseSensitive(json, "id");
@@ -962,25 +875,25 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
         }
       }
     //// smazani celeho sensoru
-    if ((strcmp(tmp1, "ds18s20/unannounce") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "ds18s20/unannounce") == 0) && (valid_json == 1))
       {
       cJSON *id = NULL;
       id = cJSON_GetObjectItemCaseSensitive(json, "id");
       if (cJSON_IsNumber(id))
         {
-        function_ds18s20_unannounced_rom(id);
+        function_ds18s20_unannounced_rom(id->valueint);
         }
       }
     cJSON_Delete(json);    
     }
   ///////
-  tmp1[0] = 0;
-  strcpy(tmp1, "/regulatory/");
-  strcat(tmp1, device.nazev);
-  strcat(tmp1, "/");
-  len = strlen(tmp1);
+  p_tmp1[0] = 0;
+  strcpy(p_tmp1, "/regulatory/");
+  strcat(p_tmp1, device.nazev);
+  strcat(p_tmp1, "/");
+  len = strlen(p_tmp1);
   let = topic_len;
-  if (strncmp(parse_topic, tmp1, len) == 0)
+  if (strncmp(parse_topic, p_tmp1, len) == 0)
     {
     cJSON *json = cJSON_Parse(parse_data);
     if (json == NULL)
@@ -991,16 +904,65 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
     else
       valid_json = 1;
     ///
-    tmp1[0] = 0;
+    p_tmp1[0] = 0;
     j = 0;
     for (uint8_t p = len; p < let; p++)
     {
-     tmp1[j] = parse_topic[p];
-     tmp1[j + 1] = 0;
+     p_tmp1[j] = parse_topic[p];
+     p_tmp1[j + 1] = 0;
      j++;
     }
-    /// saric
-    if (strcmp(tmp1, "output/set") == 0)
+
+    /// vymaze action v termostatech
+    if (strcmp(p_tmp1, "actions/clear") == 0)
+      {
+      clear_actions(255);
+      clear_actions_in_thermostat();
+      printf("Clear actions\n\r");
+      }
+
+    /// nastaveni actions
+    if ((strcmp(p_tmp1, "actions/set") == 0) && (valid_json == 1))
+      {
+      cJSON *id = NULL;
+      id = cJSON_GetObjectItemCaseSensitive(json, "id");
+      cJSON *free = NULL;
+      free = cJSON_GetObjectItemCaseSensitive(json, "free");
+      cJSON *name = NULL;
+      name = cJSON_GetObjectItemCaseSensitive(json, "name");
+      cJSON *force_state = NULL;
+      force_state = cJSON_GetObjectItemCaseSensitive(json, "force_state");
+      cJSON *outputs = NULL;
+      outputs = cJSON_GetObjectItemCaseSensitive(json, "outputs");
+      cJSON *arr = NULL;
+      change = 0;
+      if (cJSON_IsNumber(id))
+        {
+	 change = 1;
+         load_actions(id->valueint, &at);
+	 if (cJSON_IsNumber(free)){at.free = free->valueint; change = 1;};
+	 if (cJSON_IsString(name)){strcpy(at.name, name->valuestring); change = 1;};
+	 if (cJSON_IsNumber(force_state)){at.state = force_state->valueint; change = 1;};
+	 if (cJSON_IsArray(outputs))
+          {
+          j = 0;
+          arr = outputs->child;
+          while ((arr != NULL) && (j < 5))
+            {
+            at.outputs[j] = arr->valueint;
+            arr = arr->next;
+            j++;
+            }
+          }
+        }
+      if (change == 1)
+        {
+        save_actions(id->valueint, &at);
+        }
+      }
+
+
+    if (strcmp(p_tmp1, "output/set") == 0)
       {
       cJSON *c_hw_port = NULL;
       cJSON *c_id = NULL;
@@ -1008,7 +970,8 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       cJSON *c_active = NULL;
       cJSON *c_name = NULL;
       cJSON *c_mqtt_topic = NULL;
-      cJSON *c_mqtt_payload = NULL;
+      cJSON *c_mqtt_payload_up = NULL;
+      cJSON *c_mqtt_payload_down = NULL;
       cJSON *c_rs = NULL;
       cJSON *c_rsid = NULL;
       cJSON *c_rscmd = NULL;
@@ -1020,7 +983,8 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       c_name = cJSON_GetObjectItemCaseSensitive(json, "name");
       c_active = cJSON_GetObjectItemCaseSensitive(json, "active");
       c_mqtt_topic = cJSON_GetObjectItemCaseSensitive(json, "mqtt_topic");
-      c_mqtt_payload = cJSON_GetObjectItemCaseSensitive(json, "mqtt_payload");
+      c_mqtt_payload_up = cJSON_GetObjectItemCaseSensitive(json, "mqtt_payload_up");
+      c_mqtt_payload_down = cJSON_GetObjectItemCaseSensitive(json, "mqtt_payload_down");
       c_rs = cJSON_GetObjectItemCaseSensitive(json, "rs");
       c_rsid = cJSON_GetObjectItemCaseSensitive(c_rs, "rsid");
       c_rscmd = cJSON_GetObjectItemCaseSensitive(c_rs, "cmd");
@@ -1028,15 +992,16 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
       if  (cJSON_IsNumber(c_id))
         {
 	load_output(c_id->valueint, &ot);
-	if (cJSON_IsNumber(c_hw_port)){ot.hw = c_hw_port->valueint; change = 1;};
+	if (cJSON_IsNumber(c_hw_port)){ot.hw_port = c_hw_port->valueint; change = 1;};
 	if (cJSON_IsNumber(c_type)){ot.type = c_type->valueint; change = 1;};
 	if (cJSON_IsString(c_name)){strcpy(ot.name, c_name->valuestring); change = 1;};
 	if (cJSON_IsNumber(c_active)){ot.active = c_active->valueint; change = 1;};
 	if (cJSON_IsString(c_mqtt_topic)){strcpy(ot.mqtt_topic, c_mqtt_topic->valuestring); change = 1;};
-	if (cJSON_IsString(c_mqtt_payload)){strcpy(ot.mqtt_payload, c_mqtt_payload->valuestring); change = 1;};
-	if (cJSON_IsString(c_rscmd)){strcpy(ot.rs.cmd, c_rscmd->valuestring);  change = 1;};
-	if (cJSON_IsString(c_rsargs)){strcpy(ot.rs.args, c_rsargs->valuestring); change = 1;};
-	if (cJSON_IsNumber(c_rsid)){ot.rs.rsid = c_rsid->valueint; change = 1;};
+	if (cJSON_IsString(c_mqtt_payload_up)){strcpy(ot.mqtt_payload_up, c_mqtt_payload_up->valuestring); change = 1;};
+	if (cJSON_IsString(c_mqtt_payload_down)){strcpy(ot.mqtt_payload_down, c_mqtt_payload_down->valuestring); change = 1;};
+	if (cJSON_IsString(c_rscmd)){strcpy(ot.rs_up.cmd, c_rscmd->valuestring);  change = 1;};
+	if (cJSON_IsString(c_rsargs)){strcpy(ot.rs_up.args, c_rsargs->valuestring); change = 1;};
+	if (cJSON_IsNumber(c_rsid)){ot.rs_up.rsid = c_rsid->valueint; change = 1;};
         }
       if (change == 1)
         {
@@ -1046,7 +1011,7 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
 
 
     ///
-    if ((strcmp(tmp1, "at") == 0) && (valid_json == 1))
+    if ((strcmp(p_tmp1, "at") == 0) && (valid_json == 1))
       {
       cJSON *cmd = NULL;
       cJSON *args = NULL;
@@ -1061,12 +1026,12 @@ void procces_mqtt_json(char *topic, uint8_t topic_len, char *data,  uint8_t data
         }
       }
     ///
-    if (strcmp(tmp1, "get/network") == 0)
+    if (strcmp(p_tmp1, "get/network") == 0)
       {
       enable_send_network_status = 1;
       }
     ///
-    if ((strcmp(tmp1, "set/network") == 0) && (valid_json == 1)) 
+    if ((strcmp(p_tmp1, "set/network") == 0) && (valid_json == 1)) 
       {
       cJSON *nazev = NULL;
       nazev = cJSON_GetObjectItemCaseSensitive(json, "nazev");
@@ -1189,7 +1154,111 @@ void FloatToInt(float x, uint8_t *number)
   data.f = x;
   for (int i = 0; i < 4; i++) number[i] = data.b[i];
 }
-///////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// nacte actions
+uint8_t load_actions(uint8_t id, actions_t *at)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  if (id < max_actions)
+    {
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 0, &low);
+    at->last_state = low;
+    for (uint8_t i = 0; i < 5; i++ )
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 1 + i, &low);
+      at->outputs[i] = low;
+      }
+    for (uint8_t i = 0; i < 8; i++ )
+      {
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 6 + i, &low);
+      at->name[i] = low;
+      }
+    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 15, &low);
+    at->free = low;
+    ret = 1;
+    }
+  return ret;
+}
+/// ulozim actions
+uint8_t save_actions(uint8_t id, actions_t *at)
+{
+  uint8_t ret = 0;
+  if (id < max_actions)
+    {
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 0, at->last_state);
+    for (uint8_t i = 0; i < 5; i++ ) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 1 + i, at->outputs[i]);
+    for (uint8_t i = 0; i < 8; i++ ) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 6 + i, at->name[i]);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 15, at->free);
+    ret = 1;
+    }
+  return ret;
+}
+/// vymazu actions 255 = vsechno
+uint8_t clear_actions(uint8_t id)
+{
+  uint8_t ret = 0;
+  actions_t at;
+  /// vymazu vsechno
+  if (id == 255)
+    for (uint8_t ia = 0; ia < max_actions; ia++)
+      {
+      at.free = 0;
+      sprintf(at.name, "free:%d", ia);
+      for (uint8_t j = 0; j < 5; j++) at.outputs[j] = 255;
+      save_actions(ia, &at);
+      }
+  /// vymazu pouze idcko
+  if (id < max_actions)
+    {
+    at.free = 0;
+    sprintf(at.name, "free:%d", id);
+    for (uint8_t j = 0; j < 5; j++) at.outputs[j] = 255;
+    ret = save_actions(id, &at);
+    }
+  return ret;
+}
+/// zjistim jestli je actions jiz vyuzita
+uint8_t check_actions(uint8_t id)
+{
+  uint8_t ret = 0;
+  uint8_t low;
+  i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_actions_start + (eeprom_size_actions * id) + 15, &low);
+  if (low == 1) ret = 1;
+  return ret;
+}
+/// vymaze actions v termostatech
+/// 255 = neni nic nastaveno
+void clear_actions_in_thermostat(void)
+{
+  char tmp[8];
+  for (uint8_t rsid = 0; rsid < 32; rsid++)
+    {
+    if (rs_device[rsid].type == ROOM_CONTROL)
+      {
+       for (uint8_t ring = 0; ring < 3; ring++)
+         {
+	 sprintf(tmp, "%d,255", ring);
+         rs_add_buffer(rsid, "sac", tmp);
+         }
+      }
+    }
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// vymaze asociaci thermostat ring -> tds cidla
+void clear_associate_in_thermostat(void)
+{
+  for (uint8_t rsid = 0; rsid < 32; rsid++)
+    {
+    if (rs_device[rsid].type == ROOM_CONTROL)
+      {
+       rs_add_buffer(rsid, "sta", "255");
+      }
+    }
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// nacte nastaveny vystupu
 uint8_t load_output(uint8_t id, output_t *ot)
 {
@@ -1199,28 +1268,33 @@ uint8_t load_output(uint8_t id, output_t *ot)
   if (id < max_output)
     {
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 0, &low);
-    ot->hw = low;
+    ot->hw_port = low;
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 1, &low);
     ot->type = low;
     for (uint8_t i=0; i < 64; i++)
       {
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 2 + i, &low);
       ot->mqtt_topic[i] = low;
+      }
+    for (uint8_t i=0; i < 32; i++)
+      {
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 66 + i, &low);
-      ot->mqtt_payload[i] = low;
+      ot->mqtt_payload_up[i] = low;
+      i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 98 + i, &low);
+      ot->mqtt_payload_down[i] = low;
       }
     for (uint8_t i=0; i < 8; i++)
       {
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 130 + i, &low);
-      ot->rs.cmd[i] = low;
+      ot->rs_up.cmd[i] = low;
       }
     for (uint8_t i=0; i < 32; i++)
       {
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 138 + i, &low);
-      ot->rs.args[i] = low;
+      ot->rs_up.args[i] = low;
       }
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 170 , &low);
-    ot->rs.rsid = low;
+    ot->rs_up.rsid = low;
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 171 , &low);
     ot->active = low;
     for (uint8_t i=0; i < 8; i++)
@@ -1239,24 +1313,25 @@ uint8_t save_output(uint8_t id, output_t *ot)
   uint8_t ret = 0;
   if (id < max_output)
     {
-    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 0, ot->hw);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 0, ot->hw_port);
     i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 1, ot->type);
-    for (uint8_t i = 0; i < 64; i++)
+    for (uint8_t i = 0; i < 64; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 2 + i, ot->mqtt_topic[i]);
+
+    for (uint8_t i=0; i < 32; i++)
       {
-      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 2 + i, ot->mqtt_topic[i]);
-      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 66 + i, ot->mqtt_payload[i]);
+      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 66 + i, ot->mqtt_payload_up[i]);
+      i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 98 + i, ot->mqtt_payload_down[i]);
       }
-    for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 130 + i, ot->rs.cmd[i]);
-    for (uint8_t i = 0; i < 32; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 138 + i, ot->rs.args[i]);
-    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 170, ot->rs.rsid);
+    for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 130 + i, ot->rs_up.cmd[i]);
+    for (uint8_t i = 0; i < 32; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 138 + i, ot->rs_up.args[i]);
+    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 170, ot->rs_up.rsid);
     i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 171, ot->active);
     for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_output_start + (eeprom_size_output * id) + 172 + i, ot->name[i]);
     ret = 1;
     }
-
   return ret;
 }
-
+/// rychle zjistim jestli je pouzito
 uint8_t check_output(uint8_t id)
 {
   uint8_t ret = 0;
@@ -1265,7 +1340,7 @@ uint8_t check_output(uint8_t id)
   if (low == 1) ret = 1;
   return ret;
 }
-
+/// vymazu nastaveny vystupu
 void clear_output(uint8_t id)
 {
   output_t ot;
@@ -1273,32 +1348,35 @@ void clear_output(uint8_t id)
     {
     for (uint8_t io = 0; io < max_output; io++)
       {
-      ot.hw = 255;
+      ot.hw_port = 255;
       ot.type = 255;
       ot.active = 0;
       sprintf(ot.name, "free %d", io);
       strcpy(ot.mqtt_topic, " ");
-      strcpy(ot.mqtt_payload, " ");
-      ot.rs.rsid = 0;
-      strcpy(ot.rs.cmd, " ");
-      strcpy(ot.rs.args, " ");
+      strcpy(ot.mqtt_payload_up, "");
+      strcpy(ot.mqtt_payload_down, "");
+      ot.rs_up.rsid = 0;
+      strcpy(ot.rs_up.cmd, " ");
+      strcpy(ot.rs_up.args, " ");
       save_output(io, &ot);
       }
     }
-  else
+  if (id < max_output)
     {
-    ot.hw = 255;
+    ot.hw_port = 255;
     ot.type = 255;
     ot.active = 0;
     sprintf(ot.name, "free %d", id);
     strcpy(ot.mqtt_topic, "");
-    strcpy(ot.mqtt_payload, "");
-    ot.rs.rsid = 0;
-    strcpy(ot.rs.cmd, "");
-    strcpy(ot.rs.args, "");
+    strcpy(ot.mqtt_payload_up, "");
+    strcpy(ot.mqtt_payload_down, "");
+    ot.rs_up.rsid = 0;
+    strcpy(ot.rs_up.cmd, "");
+    strcpy(ot.rs_up.args, "");
     save_output(id, &ot);
     }
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// potrebuji zjistit obsazeni timeplanu, je zbytecne vsechno nacitat
@@ -1457,8 +1535,9 @@ uint8_t load_programplan(uint8_t id, programplan_t *pp)
       i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 12 + i, &low);
       pp->name[i] = low;
       }
-    i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 20, &low);
-    pp->actions = low;
+    /// zde mam volny byte
+    ///i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 20, &low);
+    //pp->actions = low;
     ret = 1;
     }
 return ret;
@@ -1474,7 +1553,7 @@ uint8_t save_programplan(uint8_t id, programplan_t *pp)
     i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 1, pp->free);
     for (uint8_t i = 0; i < 10; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 2 +i, pp->timeplan[i]);
     for (uint8_t i = 0; i < 8; i++) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 12 +i, pp->name[i]);
-    i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 20, pp->actions);
+    /// zde mam volny byte i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_program_plan + (eeprom_size_program_plan * id) + 20, pp->actions);
     ret = 1;
     }
   return ret;
@@ -1519,13 +1598,14 @@ void new_timeplan(void)
 ///
 void mqtt_subscribe(void)
 {
-  strcpy(tmp1, "/regulatory/");
-  strcat(tmp1, device.nazev);
-  strcat(tmp1, "/#");
-  esp_mqtt_client_subscribe(mqtt_client, tmp1, 0);
+  char s_tmp1[64];
+  strcpy(s_tmp1, "/regulatory/");
+  strcat(s_tmp1, device.nazev);
+  strcat(s_tmp1, "/#");
+  esp_mqtt_client_subscribe(mqtt_client, s_tmp1, 0);
 
-  strcpy(tmp1, "/regulatory/global/#");
-  esp_mqtt_client_subscribe(mqtt_client, tmp1, 0);
+  strcpy(s_tmp1, "/regulatory/global/#");
+  esp_mqtt_client_subscribe(mqtt_client, s_tmp1, 0);
 }
 ///////////////////////////////////////
 //
@@ -1685,6 +1765,7 @@ void setup(void)
   //clear_timeplan(255);
   //clear_programplan(255);
   //clear_output(255);
+  //clear_actions(255);
 }
 
 
@@ -1741,6 +1822,7 @@ void load_setup_network(void)
   i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_my_device + 0, &low);
   device.ip_static = low;
   uint8_t m;
+  /// pozice 1..5 je volne
   for (m = 0; m < 4; m++) 
     { 
     i2c_eeprom_readByte(I2C_MEMORY_ADDR, eeprom_start_my_device + 6 + m, &low);
@@ -1842,6 +1924,7 @@ void store_tds18s20_to_eeprom(uint8_t slot)
   i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_stored_device + (slot * 50) + 9, tds18s20[slot].assigned_ds2482);
   /// ulozeni nazvu cidla
   for (uint8_t a = 0; a < 20; a++ ) i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_stored_device + (slot * 50) + 10 + a, tds18s20[slot].nazev[a]);
+  ////// todo zjistit proc tak velka dira v pameti
   /// ulozeni offsetu
   i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_stored_device + (slot * 50) + 41, (tds18s20[slot].offset >> 8) & 255);
   i2c_eeprom_writeByte(I2C_MEMORY_ADDR, eeprom_start_stored_device + (slot * 50) + 42, tds18s20[slot].offset & 255);
@@ -2028,18 +2111,19 @@ uint8_t one_hw_search_device(uint8_t idx)
 ///////////////////////////////////////////////////////////////////////////////////
 void check_function(void)
 {
+    char c_tmp1[32];
+    char c_tmp2[32];
     uint8_t start_count, itmp;
     uint8_t sync_time = 0;
-    char tmp_str[5];
     for (uint8_t init = 0; init < 12; init++)
     {
       GLCD_Clear();
       GLCD_GotoXY(0, 0);
-      itoa(init, tmp1, 10);
-      strcpy(tmp2, "init: ");
-      strcat(tmp2, tmp1);
-      strcat(tmp2, "/12");
-      GLCD_PrintString(tmp2);
+      itoa(init, c_tmp1, 10);
+      strcpy(c_tmp2, "init: ");
+      strcat(c_tmp2, c_tmp1);
+      strcat(c_tmp2, "/12");
+      GLCD_PrintString(c_tmp2);
       /// test display
       if (init == 0)
       {
@@ -2072,66 +2156,65 @@ void check_function(void)
         for (uint8_t f = 0; f < 2; f++)
         {
         GLCD_GotoXY(0, 9 + (9 * f));
-	itoa(ds2482_address[f].i2c_addr, tmp1, 10);
+	itoa(ds2482_address[f].i2c_addr, c_tmp1, 10);
 	if (ds2482reset(ds2482_address[f].i2c_addr) == DS2482_ERR_OK)
 	  {
-	  strcpy(tmp2, "ds2482: ");
-	  strcat(tmp2, tmp1);
-	  strcat(tmp2, " = OK");
-	  GLCD_PrintString(tmp2);
+	  strcpy(c_tmp2, "ds2482: ");
+	  strcat(c_tmp2, c_tmp1);
+	  strcat(c_tmp2, " = OK");
+	  GLCD_PrintString(c_tmp2);
 	  }
 	else
 	  {
-	  strcpy(tmp2, "ds2482: ");
-	  strcat(tmp2, tmp1);
-	  strcat(tmp2, " = ERR");
-	  GLCD_PrintString(tmp2);
+	  strcpy(c_tmp2, "ds2482: ");
+	  strcat(c_tmp2, c_tmp1);
+	  strcat(c_tmp2, " = ERR");
+	  GLCD_PrintString(c_tmp2);
 	  }
         }
 	GLCD_Render();
       }
       /// pocet dostupnych 1wire
       if (init == 3)
-      {
-        GLCD_GotoXY(0, 16);
-	Global_HWwirenum = 0;
-	for (uint8_t i = 0; i < 2; i++ )
-	  one_hw_search_device(i);
-	strcpy(tmp2, "found 1wire: ");
-	itoa(Global_HWwirenum, tmp1, 10);
-	strcat(tmp2, tmp1);
-	GLCD_PrintString(tmp2);
-	GLCD_Render();
-      }
-      /// nacteni informaci z eepromky
-      if (init == 4)
         {
         GLCD_GotoXY(0, 16);
-        GLCD_PrintString("load from eeprom");
+	Global_HWwirenum = 0;
+	for (uint8_t i = 0; i < 2; i++ ) one_hw_search_device(i);
+	strcpy(c_tmp2, "found 1wire: ");
+	itoa(Global_HWwirenum, c_tmp1, 10);
+	strcat(c_tmp2, c_tmp1);
+	GLCD_PrintString(c_tmp2);
 	GLCD_Render();
-        load_tds18s20_from_eeprom();
-        load_setup_network();
+	}
+      /// nacteni informaci z eepromky
+      if (init == 4)
+	{
+	GLCD_GotoXY(0, 16);
+	GLCD_PrintString("load from eeprom");
+	GLCD_Render();
+	load_tds18s20_from_eeprom();
+	load_setup_network();
 	//strcpy(device.mqtt_uri, "mqtt://192.168.1.120");
 	//save_setup_network();
-        }
+	}
       /// inicializace wifi
       if (init == 5)
 	{
 	GLCD_GotoXY(0, 16);
 	GLCD_PrintString("start wifi");
 	GLCD_Render();
-        static httpd_handle_t server = NULL;
-        wifi_init(&server);
+	static httpd_handle_t server = NULL;
+	wifi_init(&server);
 	}
       /// inicializace mqqt protokolu
       if (init == 6) 
 	{ 
-          {
+	  {
 	  GLCD_GotoXY(0, 16);
 	  GLCD_PrintString("init mqtt");
 	  GLCD_Render();
-          mqtt_init();
-          }
+	  mqtt_init();
+	  }
 	}
       /// overeni funkce RTC
       if (init == 7)
@@ -2148,7 +2231,7 @@ void check_function(void)
 	  GLCD_GotoXY(0, 12);
 	  GLCD_PrintString("RTC = ERR");
 	  GLCD_GotoXY(0, 20);
-          /// kdyz nebezi RTC pokusim se nacist cas z NTP
+	  /// kdyz nebezi RTC pokusim se nacist cas z NTP
 	  if (wifi_connected == 1)
 	    {
 	    if (sync_ntp_time_with_local_rtc() == 1)
@@ -2162,650 +2245,73 @@ void check_function(void)
 	      sync_time = 0;
 	    }
 	    }
-	  else
+          else
 	    printf("... error ntp, not wifi running\n\r");
 	}
-        GLCD_Render();
+	GLCD_Render();
       }
 
       /// overeni stavu wifi
       if (init == 8)
       {
-        GLCD_GotoXY(0, 16);
-        if (wifi_connected == 1)
-        {
-          strcpy(tmp2, "WIFI: UP ");
-	  GLCD_PrintString(tmp2);
-        }
+	GLCD_GotoXY(0, 16);
+	if (wifi_connected == 1)
+	{
+	  strcpy(c_tmp2, "WIFI: UP ");
+	  GLCD_PrintString(c_tmp2);
+	}
 	else
 	{
-	  strcpy(tmp2, "WIFI: DOWN ");
-	  GLCD_PrintString(tmp2);
+	  strcpy(c_tmp2, "WIFI: DOWN ");
+	  GLCD_PrintString(c_tmp2);
 	}
-        GLCD_Render();
+	GLCD_Render();
       }
- 
+	 
       /// overeni stavu spojeni na mqtt, ale pokud jsem uspesne sync s internetem
       if ((init == 9) && (sync_time == 1))
       {
-        GLCD_GotoXY(0, 16);
-        GLCD_PrintString("Sync time at devices");
-        sync_time_rs_device();
+	GLCD_GotoXY(0, 16);
+	GLCD_PrintString("Sync time at devices");
+	sync_time_rs_device();
 	GLCD_Render();
       }
-      
+	      
       /// ukazi na displayi
       vTaskDelay(100);
     }
     printf("%s", "ready ...\n\r");
 }
 
+
+////////////////////////////////////////////////////////////////////////////
 void printJsonObject(cJSON *item)
 {
     char *json_string = cJSON_Print(item);
     if (json_string)
     {
-        printf("%s\n", json_string);
-        cJSON_free(json_string);
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_timeplan(void)
-{
-  timeplan_t tp;
-  for (uint8_t id = 0; id < max_timeplan; id++)
-    {
-    load_timeplan(id, &tp);
-    if (tp.free == 1)
-      {
-      cJSON *timepl = cJSON_CreateObject();
-      strcpy(tmp1, "/regulatory/timeplan/");
-      cJSON *c_start_min = cJSON_CreateNumber(tp.start_min);
-      cJSON *c_start_hour = cJSON_CreateNumber(tp.start_hour);
-      cJSON *c_stop_min = cJSON_CreateNumber(tp.stop_min);
-      cJSON *c_stop_hour = cJSON_CreateNumber(tp.stop_hour);
-      cJSON *c_name = cJSON_CreateString(tp.name);
-      cJSON *c_active = cJSON_CreateNumber(tp.active);
-      cJSON *c_free = cJSON_CreateNumber(tp.free);
-      cJSON *c_cond = cJSON_CreateNumber(tp.condition);
-      cJSON *c_thresh = cJSON_CreateNumber(tp.threshold);
-      cJSON *c_id = cJSON_CreateNumber(id);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-      cJSON *c_week = cJSON_CreateNumber(tp.week_day);
-      cJSON_AddItemToObject(timepl, "term_name", term_name);
-      cJSON_AddItemToObject(timepl, "start_min", c_start_min);
-      cJSON_AddItemToObject(timepl, "start_hour", c_start_hour);
-      cJSON_AddItemToObject(timepl, "stop_min", c_stop_min);
-      cJSON_AddItemToObject(timepl, "stop_hour", c_stop_hour);
-      cJSON_AddItemToObject(timepl, "week_day", c_week);
-      cJSON_AddItemToObject(timepl, "name", c_name);
-      cJSON_AddItemToObject(timepl, "condition", c_cond);
-      cJSON_AddItemToObject(timepl, "treshold", c_thresh);
-      cJSON_AddItemToObject(timepl, "active", c_active);
-      cJSON_AddItemToObject(timepl, "free", c_free);
-      cJSON_AddItemToObject(timepl, "id", c_id);
-
-      char * string = cJSON_Print(timepl);
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp2[i] = string[i];
-        tmp2[i+1] = 0;
-        }
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-      cJSON_Delete(timepl);
-      cJSON_free(string);
-      } 
-    }
-}
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_programplan(void)
-{
-  programplan_t pp;
-  int array[10];
-  for (uint8_t id = 0; id < max_programplan; id++)
-    {
-    if (check_programplan(id) == 1)
-      {
-      cJSON *prgpl = cJSON_CreateObject();
-      load_programplan(id, &pp);
-      strcpy(tmp1, "/regulatory/programplan/");
-      cJSON *c_active = cJSON_CreateNumber(pp.active);
-      cJSON *c_free = cJSON_CreateNumber(pp.free);
-      cJSON *c_id = cJSON_CreateNumber(id);
-      cJSON *c_name = cJSON_CreateString(pp.name);
-      cJSON *c_act = cJSON_CreateString(pp.actions);
-      for (uint8_t ii=0; ii<10; ii++) array[ii] = pp.timeplan[ii];
-      cJSON *en = cJSON_CreateIntArray(array, 10);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-      cJSON_AddItemToObject(prgpl, "term_name", term_name);
-      cJSON_AddItemToObject(prgpl, "name", c_name);
-      cJSON_AddItemToObject(prgpl, "active", c_active);
-      cJSON_AddItemToObject(prgpl, "free", c_free);
-      cJSON_AddItemToObject(prgpl, "id", c_id);
-      cJSON_AddItemToObject(prgpl, "timeplans", en);
-      cJSON_AddItemToObject(prgpl, "actions", c_act);
-
-      char * string = cJSON_Print(prgpl);
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp2[i] = string[i];
-	tmp2[i+1] = 0;
-        }
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-      cJSON_Delete(prgpl);
-      cJSON_free(string);
-      }
-    }
-}
-
-
-void send_set_output(void)
-{
-  output_t ot;
-  for (uint8_t oi = 0; oi < max_output; oi++)
-    {
-    if (check_output(oi) == 1)
-      {
-      cJSON *outj = cJSON_CreateObject();
-      load_output(oi, &ot);
-      strcpy(tmp1, "/regulatory/output/");
-      cJSON *c_active = cJSON_CreateNumber(ot.active);
-      cJSON *c_hw = cJSON_CreateNumber(ot.hw);
-      cJSON *c_type = cJSON_CreateNumber(ot.type);
-      cJSON *c_id = cJSON_CreateNumber(oi);
-      cJSON *c_state = cJSON_CreateNumber(output_state[oi]);
-      cJSON *c_name = cJSON_CreateString(ot.name);
-      cJSON *c_term_name = cJSON_CreateString(device.nazev);
-      cJSON *c_mqtt_topic = cJSON_CreateString(ot.mqtt_topic);
-      cJSON *c_mqtt_payload = cJSON_CreateString(ot.mqtt_payload);
-      
-      cJSON *c_rs_cmd = cJSON_CreateString(ot.rs.cmd);
-      cJSON *c_rs_args = cJSON_CreateString(ot.rs.args);
-      cJSON *c_rs_rsid = cJSON_CreateNumber(ot.rs.rsid);
-      cJSON *rsobj = cJSON_CreateObject();
-      cJSON_AddItemToObject(rsobj, "rsid", c_rs_rsid);
-      cJSON_AddItemToObject(rsobj, "cmd", c_rs_cmd);
-      cJSON_AddItemToObject(rsobj, "args", c_rs_args);
-
-      cJSON_AddItemToObject(outj, "state", c_state);
-      cJSON_AddItemToObject(outj, "term_name", c_term_name);
-      cJSON_AddItemToObject(outj, "id", c_id);
-      cJSON_AddItemToObject(outj, "type", c_type);
-      cJSON_AddItemToObject(outj, "active", c_active);
-      cJSON_AddItemToObject(outj, "hw", c_hw);
-      cJSON_AddItemToObject(outj, "name", c_name);
-      cJSON_AddItemToObject(outj, "mqtt_topic", c_mqtt_topic);
-      cJSON_AddItemToObject(outj, "mqtt_payload", c_mqtt_payload);
-      cJSON_AddItemToObject(outj, "rs", rsobj);
-
-      char * string = cJSON_Print(outj);
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp2[i] = string[i];
-        tmp2[i+1] = 0;
-        }
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-      cJSON_Delete(outj);
-      cJSON_free(string);
-      }    
-    }
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_network_static_config(void)
-{
-  strcpy(tmp1, "/regulatory/network/static");
-  cJSON *status = cJSON_CreateObject();
-  char ipstr[16];
-  sprintf(ipstr, "%d.%d.%d.%d", device.myIP[0], device.myIP[2], device.myIP[2], device.myIP[3]);
-  cJSON *ip = cJSON_CreateString(ipstr);
-
-  char maskstr[16];
-  sprintf(maskstr, "%d.%d.%d.%d", device.myMASK[0], device.myMASK[2], device.myMASK[2], device.myMASK[3]);
-  cJSON *mask = cJSON_CreateString(maskstr);
-
-  char gwstr[16];
-  sprintf(gwstr, "%d.%d.%d.%d", device.myGW[0], device.myGW[2], device.myGW[2], device.myGW[3]);
-  cJSON *gw = cJSON_CreateString(gwstr);
-
-  char dnsstr[16];
-  sprintf(dnsstr, "%d.%d.%d.%d", device.myDNS[0], device.myDNS[2], device.myDNS[2], device.myDNS[3]);
-  cJSON *dns = cJSON_CreateString(dnsstr);
-
-
-
-  cJSON *mqtt_uri = cJSON_CreateString(device.mqtt_uri);
-
-  cJSON *wifi_essid = cJSON_CreateString(device.wifi_essid);
-  cJSON *wifi_pass = cJSON_CreateString(device.wifi_pass);
-  cJSON *ip_static = cJSON_CreateNumber(device.ip_static);
-  cJSON *device_name = cJSON_CreateString(device.nazev);
-
-  cJSON_AddItemToObject(status, "ip", ip);
-  cJSON_AddItemToObject(status, "mask", mask);
-  cJSON_AddItemToObject(status, "gw", gw);
-  cJSON_AddItemToObject(status, "dns", dns);
-  
-  cJSON_AddItemToObject(status, "mqtt_uri", mqtt_uri);
-  cJSON_AddItemToObject(status, "wifi_essid", wifi_essid);
-  cJSON_AddItemToObject(status, "wifi_pass", wifi_pass);
-  cJSON_AddItemToObject(status, "static", ip_static);
-  cJSON_AddItemToObject(status, "term_name", device_name);
-  char * string = cJSON_Print(status);
-
-  for (uint16_t i = 0; i < strlen(string); i++)
-    {
-    tmp2[i] = string[i];
-    tmp2[i+1] = 0;
-    }
-
-  esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-
-  cJSON_Delete(status);
-  cJSON_free(string);
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/// odesle konfigurace, ktera prave bezi
-void send_network_running_config(void)
-{
-  uint8_t mac[6];
-  char ipstr[16];
-  char maskstr[16];
-  strcpy(tmp1, "/regulatory/network/run");
-  cJSON *status = cJSON_CreateObject();
-
-  tcpip_adapter_ip_info_t ipInfo;
-  //char str[256];
- 
-  // IP address.
-  tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ipInfo);
-  printf("ip: %s\n", ip4addr_ntoa(&ipInfo.ip));
-  printf("netmask: %s\n", ip4addr_ntoa(&ipInfo.netmask));
-  printf("gw: %s\n", ip4addr_ntoa(&ipInfo.gw));
-  ip_addr_t dnssrv=dns_getserver(0);
-  printf("dns=%s\n\r", inet_ntoa(dnssrv));
-
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  char macstr[16];
-  sprintf(macstr, "%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] );
-
-  cJSON *wifi_mac = cJSON_CreateString(macstr);
-  cJSON_AddItemToObject(status, "wifi_mac", wifi_mac);
-  char * string = cJSON_Print(status);
-
-  for (uint16_t i = 0; i < strlen(string); i++)
-    {
-    tmp2[i] = string[i];
-    tmp2[i+1] = 0;
-    }
-
-  esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-
-  cJSON_Delete(status);
-  cJSON_free(string);
-
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/// pres mqtt odeslu muj aktualni status, ping + uptime
-void send_mqtt_status(void)
-{
-  int64_t time_since_boot = esp_timer_get_time()/1000/1000;
-  uint8_t rssi = 0;
-  wifi_ap_record_t wifidata;
-  strcpy(tmp1, "/regulatory/status/");
-  strcat(tmp1, device.nazev);
-  cJSON *status = cJSON_CreateObject();
-  cJSON *live = cJSON_CreateString("live");
-  cJSON *uptime = cJSON_CreateNumber(time_since_boot);
-  cJSON_AddItemToObject(status, "ping", live);
-  cJSON_AddItemToObject(status, "uptime", uptime);
-  cJSON *heapd = cJSON_CreateNumber(esp_get_free_heap_size());
-  if (esp_wifi_sta_get_ap_info(&wifidata)==0)
-    {
-    rssi =  wifidata.rssi;
-    }
-  cJSON *wifirssi = cJSON_CreateNumber(rssi);
-  cJSON_AddItemToObject(status, "wifi_rssi", wifirssi);
-  cJSON_AddItemToObject(status, "heap", heapd);
-  char * string = cJSON_Print(status);
-  for (uint8_t i = 0; i < strlen(string); i++)
-    {
-    tmp2[i] = string[i];
-    tmp2[i+1] = 0;
-    }
-
-  esp_mqtt_client_publish(mqtt_client, tmp1, tmp2, 0, 1, 0);
-  
-  cJSON_Delete(status);
-  cJSON_free(string);
-}
-////////////////////////////////////////////////////////////////////////////////////
-/// pres mqtt odeslu nalezene 1wire devices
-void send_mqtt_find_rom(void)
-{
-  char c[5];
-  for (uint8_t id = 0; id < Global_HWwirenum; id++ )
-    {
-    strcpy(tmp1, "/regulatory/1wire/");
-    cJSON *wire = cJSON_CreateObject();
-    cJSON *id_driver = cJSON_CreateNumber(ds2482_address[w_rom[id].assigned_ds2482].i2c_addr);
-    cJSON *idf = cJSON_CreateNumber(id);
-    cJSON *name = cJSON_CreateString(device.nazev);
-    tmp2[0] = 0;
-    for (uint8_t a = 0; a < 8; a++ )
-      {
-      itoa(w_rom[id].rom[a], c, 16);
-      strcat(tmp2, c);
-      if (a < 7)
-        {
-        c[0] = ':';
-        c[1] = 0;
-        strcat(tmp2, c);
-        }
-      }
-    cJSON *rom = cJSON_CreateString(tmp2);
-    cJSON_AddItemToObject(wire, "id_driver", id_driver);
-    cJSON_AddItemToObject(wire, "id", idf);
-    cJSON_AddItemToObject(wire, "term_name", name);
-    cJSON_AddItemToObject(wire, "rom", rom);
-    char * string = cJSON_Print(wire);
-    tmp3[0] = 0;
-    for (uint16_t i = 0; i < strlen(string); i++)
-      {
-      tmp3[i] = string[i];
-      tmp3[i+1] = 0;
-      }
-
-    esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-    
-    cJSON_Delete(wire);
-    cJSON_free(string);
-    
-    }
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_mqtt_tds(void)
-{
-  char c[5];
-  for (uint8_t i = 0; i < HW_ONEWIRE_MAXROMS; i++)
-    {
-    if (tds18s20[i].volno == 1)
-      {
-      strcpy(tmp1, "/regulatory/ds18s20/");
-      cJSON *tds = cJSON_CreateObject();
-      cJSON *slotid = cJSON_CreateNumber(i);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-      tmp2[0] = 0;
-      for (uint8_t a = 0; a < 8; a++ )
-        {
-        itoa(w_rom[i].rom[a], c, 16);
-        strcat(tmp2, c);
-        if (a < 7)
-          {
-          c[0] = ':';
-          c[1] = 0;
-          strcat(tmp2, c);
-          }
-        }
-      cJSON *rom = cJSON_CreateString(tmp2);
-      cJSON *name = cJSON_CreateString(tds18s20[i].nazev);
-      cJSON *temp = cJSON_CreateNumber(tds18s20[i].temp);
-      cJSON *offset = cJSON_CreateNumber(tds18s20[i].offset);
-      cJSON *online = cJSON_CreateNumber(tds18s20[i].online);
-      cJSON_AddItemToObject(tds, "slot_id", slotid);
-      cJSON_AddItemToObject(tds, "term_name", term_name);
-      cJSON_AddItemToObject(tds, "rom", rom);
-      cJSON_AddItemToObject(tds, "name", name);
-      cJSON_AddItemToObject(tds, "temp", temp);
-      cJSON_AddItemToObject(tds, "offset", offset);
-      cJSON_AddItemToObject(tds, "online", online);
-      char * string = cJSON_Print(tds);
-      tmp3[0] = 0;
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp3[i] = string[i];
-        tmp3[i+1] = 0;
-        }
-
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-      
-      cJSON_Delete(tds);
-      cJSON_free(string);
-      
-      }
+	printf("%s\n", json_string);
+	cJSON_free(json_string);
     }
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_rs_device(void)
-{
-  strcpy(tmp1, "/regulatory/rs/info");
-  for (uint8_t rsid = 0; rsid < 32; rsid++)
-    {
-    if (rs_device[rsid].ready == 1)
-      {
-      cJSON *rs_dev = cJSON_CreateObject();
-      cJSON *rs_id = cJSON_CreateNumber(rsid);
-      cJSON *rs_online = cJSON_CreateNumber(rs_device[rsid].online);
-      cJSON *rs_type = cJSON_CreateNumber(rs_device[rsid].type);
-      cJSON *rs_version = cJSON_CreateNumber(rs_device[rsid].version);
-      cJSON *rs_stamp = cJSON_CreateNumber(rs_device[rsid].stamp);
-      cJSON *rs_uptime = cJSON_CreateNumber(rs_device[rsid].uptime);
-      cJSON *rs_name = cJSON_CreateString(rs_device[rsid].device_name);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-
-      cJSON_AddItemToObject(rs_dev, "rsid", rs_id);
-      cJSON_AddItemToObject(rs_dev, "type", rs_type);
-      cJSON_AddItemToObject(rs_dev, "version", rs_version);
-      cJSON_AddItemToObject(rs_dev, "name", rs_name);
-      cJSON_AddItemToObject(rs_dev, "term_name", term_name);
-      cJSON_AddItemToObject(rs_dev, "stamp", rs_stamp);
-      cJSON_AddItemToObject(rs_dev, "uptime", rs_uptime);
-      cJSON_AddItemToObject(rs_dev, "online", rs_online);
-      
-
-      char * string = cJSON_Print(rs_dev);
-      tmp3[0] = 0;
-      for (uint8_t i = 0; i < strlen(string); i++)
-        {
-        tmp3[i] = string[i];
-        tmp3[i+1] = 0;
-        }
-
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-
-      cJSON_Delete(rs_dev);
-      cJSON_free(string);
-      }
-    }
-}
-
-void send_wire_tds(void)
-{
-  strcpy(tmp1, "/regulatory/rs/tds/");
-  for (uint8_t rsid = 0; rsid < 32; rsid++)
-    {
-    if (remote_tds[rsid].ready == 1)
-      {
-      cJSON *rem_tds = cJSON_CreateObject();
-      cJSON *rs_id = cJSON_CreateNumber(rsid);
-      cJSON *rs_stamp = cJSON_CreateNumber(remote_tds[rsid].stamp);
-      cJSON *rs_name = cJSON_CreateString(rs_device[rsid].device_name);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-
-      cJSON *ids = cJSON_CreateArray();
-      for (uint8_t id = 0; id < remote_tds[rsid].cnt; id++ )
-        {
-	cJSON *jid = cJSON_CreateObject();
-        cJSON *rs_temp = cJSON_CreateNumber(remote_tds[rsid].id[id].temp);
-	cJSON *rs_offset = cJSON_CreateNumber(remote_tds[rsid].id[id].offset);
-	cJSON *rs_online = cJSON_CreateNumber(remote_tds[rsid].id[id].online);
-	cJSON *rs_tdsid = cJSON_CreateNumber(id);
-
-	cJSON_AddItemToObject(jid, "temp", rs_temp);
-	cJSON_AddItemToObject(jid, "offset", rs_offset);
-	cJSON_AddItemToObject(jid, "online", rs_online);
-	cJSON_AddItemToObject(jid, "id", rs_tdsid);
-	cJSON_AddItemToArray(ids, jid);
-        }
-
-      cJSON_AddItemToObject(rem_tds, "id", ids);
-      cJSON_AddItemToObject(rem_tds, "term_name", term_name);
-      cJSON_AddItemToObject(rem_tds, "name", rs_name);
-      cJSON_AddItemToObject(rem_tds, "stamp", rs_stamp);
-      cJSON_AddItemToObject(rem_tds, "rsid", rs_id);
-
-
-      char * string = cJSON_Print(rem_tds);
-      tmp3[0] = 0;
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp3[i] = string[i];
-        tmp3[i+1] = 0;
-        }
-
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-
-      cJSON_Delete(rem_tds);
-      cJSON_free(string);
-      }
-  
-    }
-
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_remote_wire(void)
-{
-  strcpy(tmp1, "/regulatory/rs/wire/");
-  for (uint8_t rsid = 0; rsid < 32; rsid++)
-    {
-    if (remote_wire[rsid].ready == 1)
-      {
-      cJSON *rem_wire = cJSON_CreateObject();
-      cJSON *ids = cJSON_CreateArray();
-
-      for (uint8_t id = 0; id < remote_wire[rsid].cnt; id++)
-        {
-	cJSON *jid = cJSON_CreateObject();
-	cJSON *id_name = cJSON_CreateString(remote_wire[rsid].id[id].name);
-	cJSON *w_id = cJSON_CreateNumber(id);
-	char rom[26];
-	char tmpm[6];
-	rom[0] = 0;
-	tmpm[0] = 0;
-	for (uint8_t m = 0; m < 8; m++ )
-	  {
-	  itoa(remote_wire[rsid].id[id].rom[m], tmpm, 16);
-	  strcat(rom, tmpm);
-	  if (m < 7) strcat(rom, ":");
-	  tmpm[0] = 0;
-	  }
-        cJSON *id_rom = cJSON_CreateString(rom);
-	cJSON_AddItemToObject(jid, "id", w_id);
-        cJSON_AddItemToObject(jid, "name", id_name);
-	cJSON_AddItemToObject(jid, "rom", id_rom);
-        cJSON_AddItemToArray(ids, jid);
-        }
-
-
-      cJSON *rs_stamp = cJSON_CreateNumber(remote_wire[rsid].stamp);
-      cJSON *rs_id = cJSON_CreateNumber(rsid);
-      cJSON *rs_name = cJSON_CreateString(rs_device[rsid].device_name);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-
-      cJSON_AddItemToObject(rem_wire, "id", ids);
-      cJSON_AddItemToObject(rem_wire, "term_name", term_name);
-      cJSON_AddItemToObject(rem_wire, "name", rs_name);
-      cJSON_AddItemToObject(rem_wire, "rsid", rs_id);
-      cJSON_AddItemToObject(rem_wire, "stamp", rs_stamp);
-
-      char * string = cJSON_Print(rem_wire);
-      tmp3[0] = 0;
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp3[i] = string[i];
-        tmp3[i+1] = 0;
-        }
-
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-
-      cJSON_Delete(rem_wire);
-      cJSON_free(string);
-      }
-    }
-
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void send_thermostat_status(void)
-{
-  strcpy(tmp1, "/regulatory/rs/thermostat/");
-  for (uint8_t rsid = 0; rsid < 32; rsid++)
-    {
-    if (remote_room_thermostat[rsid].ready == 1)
-      {
-      cJSON *rem_therm = cJSON_CreateObject();
-      cJSON *ids = cJSON_CreateArray();
-      cJSON *rs_id = cJSON_CreateNumber(rsid);
-      cJSON *rs_light = cJSON_CreateNumber(remote_room_thermostat[rsid].light);
-      cJSON *rs_name = cJSON_CreateString(rs_device[rsid].device_name);
-      cJSON *term_name = cJSON_CreateString(device.nazev);
-      cJSON *term_mode = cJSON_CreateNumber(remote_room_thermostat[rsid].term_mode);
-
-      for (uint8_t id = 0; id < 3; id++)
-        {
-        cJSON *jid = cJSON_CreateObject();
-        cJSON *t_id = cJSON_CreateNumber(id);
-        cJSON *t_name = cJSON_CreateString(remote_room_thermostat[rsid].term_name[id]);
-        cJSON *t_thresh = cJSON_CreateNumber(remote_room_thermostat[rsid].term_threshold[id]);
-        cJSON *t_prog = cJSON_CreateNumber(remote_room_thermostat[rsid].active_program[id]);
-
-        cJSON_AddItemToObject(jid, "id", t_id);
-        cJSON_AddItemToObject(jid, "therm_name", t_name);
-        cJSON_AddItemToObject(jid, "therm_threshold", t_thresh);
-        cJSON_AddItemToObject(jid, "therm_program", t_prog);
-	cJSON_AddItemToArray(ids, jid);
-        }
-      
-      cJSON_AddItemToObject(rem_therm, "id", ids);
-      cJSON_AddItemToObject(rem_therm, "rsid", rs_id);
-      cJSON_AddItemToObject(rem_therm, "light", rs_light);
-      cJSON_AddItemToObject(rem_therm, "term_name", term_name);
-      cJSON_AddItemToObject(rem_therm, "name", rs_name);
-      cJSON_AddItemToObject(rem_therm, "term_mode", term_mode);
-
-      char * string = cJSON_Print(rem_therm);
-      tmp3[0] = 0;
-      for (uint16_t i = 0; i < strlen(string); i++)
-        {
-        tmp3[i] = string[i];
-        tmp3[i+1] = 0;
-        }
-
-      esp_mqtt_client_publish(mqtt_client, tmp1, tmp3, 0, 1, 0);
-
-      cJSON_Delete(rem_therm);
-      cJSON_free(string);
-      }
-    }
-
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+//
+//
 void show_1wire_status(char *text)
 {
+  char c_tmp1[8];
   strcpy(text, "1wire: ");
-  itoa(Global_HWwirenum, tmp1, 10);
-  strcat(text, tmp1);
+  itoa(Global_HWwirenum, c_tmp1, 10);
+  strcat(text, c_tmp1);
 }
 
 
 void show_heap(char *text)
 {
+  char h_tmp1[8];
   strcpy(text, "mem:");
-  itoa(esp_get_free_heap_size()/1024, tmp1, 10);
-  strcat(text, tmp1);
+  itoa(esp_get_free_heap_size()/1024, h_tmp1, 10);
+  strcat(text, h_tmp1);
   strcat(text, "kb");
 }
 
@@ -2846,6 +2352,7 @@ void show_time(char *text)
   RTC_DS1307_now(&now);
   sprintf(text, "%.2d:%.2d:%.2d", now.hour, now.minute, now.second);
 }
+
 
 void show_uptime(char *text)
 {
@@ -2910,7 +2417,7 @@ void show_screen(void)
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void rs_send_buffer(void)
 {
-  int32_t time_since_boot = esp_timer_get_time(); 
+  //int32_t time_since_boot = esp_timer_get_time(); 
   uint8_t cnt = send_at[send_rsid].cnt;
   uint8_t send_idx = send_at[send_rsid].send_idx;
   //printf("rsid: %d, total cnt: %d\n\r", send_rsid, cnt);
@@ -3062,16 +2569,19 @@ void callback_30_sec(void* arg)
   /// odesilam informace
   if (mqtt_connected == 1)
     {
-    send_mqtt_status();
-    send_mqtt_find_rom();
-    send_mqtt_tds();
+    send_device_status();
+    send_network_static_config();
+    //send_mqtt_find_rom();
+    //send_mqtt_tds();
     send_rs_device();
-    send_remote_wire();
-    send_wire_tds();
+    send_rs_wire();
+    send_rs_tds();
     send_thermostat_status();
-    send_programplan();
-    send_timeplan();
-    send_set_output();
+    send_thermostat_ring_status();
+    //send_programplan();
+    //send_timeplan();
+    //send_set_output();
+    //send_actions();
     }
   else
     {
@@ -3135,12 +2645,12 @@ void add_at_input_command_buffer(char *data, uint8_t len)
     new_parse_at(args, str1, str2);
     strcpy(remote_wire[rsid].id[atoi(str1)].name, str2);
     }
-
+  /// pocet vzdalenych wire
   if (strcmp(cmd, "wc") == 0)
     {
     remote_wire[rsid].cnt = atoi(args);
     }
-
+  ///
   if (strcmp(cmd, "wm") == 0)
     {
     new_parse_at(args, str1, str2);
@@ -3154,41 +2664,51 @@ void add_at_input_command_buffer(char *data, uint8_t len)
     remote_wire[rsid].stamp = stamp;
     remote_wire[rsid].ready = 1;
     }
-
+  /// termostat nazev zarizeni
   if (strcmp(cmd, "gdn") == 0)
     {
     strcpy(rs_device[rsid].device_name, args);
     }
-
+  /// termostat intenzita osvetleni
   if (strcmp(cmd, "gl") == 0)
     remote_room_thermostat[rsid].light = atoi(args);
-
   /// termostat globalni mode 
   if (strcmp(cmd, "ggm") == 0)
     {
     remote_room_thermostat[rsid].term_mode = atoi(args);
     remote_room_thermostat[rsid].ready = 1;
     }
-
   /// termostat ringy programy
   if (strcmp(cmd, "gtp") == 0)
     {
     new_parse_at(args, str1, str2);
     remote_room_thermostat[rsid].active_program[atoi(str1)] = atoi(str2);
     }
-
-  if (strcmp(cmd, "gtn") == 0)
+  /// termostat ringy nastaveni action
+  if (strcmp(cmd, "gac") == 0)
     {
     new_parse_at(args, str1, str2);
-    strcpy(remote_room_thermostat[rsid].term_name[atoi(str1)], str2);
+    remote_room_thermostat[rsid].ring_action[atoi(str1)] = atoi(str2);
     }
-
-  if (strcmp(cmd, "gtt") == 0)
+  /// termostat nazev get ring name 
+  if (strcmp(cmd, "grn") == 0)
     {
     new_parse_at(args, str1, str2);
-    remote_room_thermostat[rsid].term_threshold[atoi(str1)] = atof(str2);
+    strcpy(remote_room_thermostat[rsid].ring_name[atoi(str1)], str2);
     }
-
+  /// termostat nastaveni thresholdu pri rucnim programu get ring treshold
+  if (strcmp(cmd, "grt") == 0)
+    {
+    new_parse_at(args, str1, str2);
+    remote_room_thermostat[rsid].ring_threshold[atoi(str1)] = atof(str2);
+    }
+  /// termostat asociace cidla tds
+  if (strcmp(cmd, "gta") == 0)
+    {
+    new_parse_at(args, str1, str2);
+    remote_room_thermostat[rsid].ring_associate_tds[atoi(str1)] = atoi(str2);
+    }
+  /// uptime rs zarizeni
   if (strcmp(cmd, "upd") == 0)
     {
     rs_device[rsid].uptime = atoi(args);
@@ -3207,7 +2727,27 @@ void add_at_input_command_buffer(char *data, uint8_t len)
       }
     }
 }
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void thermostat(void)
+{
+  for (uint8_t rsid = 0; rsid < 32; rsid++)
+    {
+    if ((rs_device[rsid].ready == 1) && (rs_device[rsid].online == 1) && (rs_device[rsid].type == ROOM_CONTROL))
+      if (remote_room_thermostat[rsid].ready == 1)
+        {
+	/// vypnuto
+        if (remote_room_thermostat[rsid].term_mode == 0)
+	  {
+          for (uint8_t ring = 0; ring < 3; ring++)
+	    remote_room_thermostat[rsid].ring_action[ring]=1;	  
+	  }
+
+        }
+    }
+}
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3216,7 +2756,7 @@ void rs_receive_task(void* args)
 {
   uint8_t* data = (uint8_t*) malloc(RS_BUF_SIZE);
   char input[MAX_TEMP_BUFFER];
-  uint8_t re_at = 0;
+  uint16_t re_at = 0;
   uint8_t start_at = 0;
   uint8_t c;
   int len = 0;

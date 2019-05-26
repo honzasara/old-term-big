@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include "driver/i2c.h"
-#include "global.h"
+#include "term-big-1.h"
 
 #define TRUE    1
 #define FALSE   0

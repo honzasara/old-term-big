@@ -1,5 +1,5 @@
 #include "SSD1306.h"
-#include "global.h"
+#include "term-big-1.h"
 #include "stdio.h"
 
 //----- Auxiliary data ------//
