@@ -633,3 +633,5 @@ void send_thermostat_status(void)
 }
 
 /// {"light":        997,"name": "loznice","term_mode":    3}
+/// /regulatory/patro/rs/6/tds/0 {"temp": 26.200000762939453,"offset":0,"online":1,"stamp":85792}
+
